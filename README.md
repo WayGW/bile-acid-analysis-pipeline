@@ -158,7 +158,3 @@ bile_acid_pipeline/
 
 MIT License - Feel free to use and modify for research purposes.
 
-## Citation
-
-If you use this pipeline in your research, please cite:
-[Your citation information here]
