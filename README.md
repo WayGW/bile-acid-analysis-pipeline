@@ -146,10 +146,12 @@ bile_acid_pipeline/
 ├── README.md              # This file
 ├── config/
 │   ├── __init__.py
-│   └── bile_acid_species.py  # BA definitions (EDIT THIS FOR NEW BAs)
+│   ├── bile_acid_species.py  # BA definitions (EDIT THIS FOR NEW BAs)
+    └── sample_matrices.py  # Sample matrix definitions (EDIT THIS FOR NEW sample matrices)
 └── modules/
     ├── __init__.py
     ├── data_processing.py    # Data loading and calculations
+    ├── report_generation.py  # Statistical report output
     ├── statistical_tests.py  # Automated statistical analysis
     └── visualization.py      # Publication-quality figures
 ```
