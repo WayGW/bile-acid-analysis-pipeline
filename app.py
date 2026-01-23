@@ -850,6 +850,35 @@ def main():
         with tabs[4]: render_statistics_tab(processed, settings)
         with tabs[5]: render_export_tab(processed, settings)
 
+    else:
+            # Show expected input format when no data is loaded
+            st.markdown("---")
+            st.markdown("### 📋 Expected Input Format")
+            
+            st.markdown("""
+            - **Rows:** Samples
+            - **Columns:** Bile acid species (matching panel names)
+            - **First column(s):** Sample ID, Group/Type
+            - **Values:** Concentrations (typically nmol/L)
+            - **Below LOD:** Can be "-----", "LOD", "BLQ", "ND", etc.
+            """)
+            
+            st.markdown("**Example:**")
+            
+            # Create example dataframe
+            example_df = pd.DataFrame({
+                'Type': ['HD-1', 'HD-2', 'AC-1'],
+                'Sample_ID': ['81-0210', '81-0211', '60-677'],
+                'TCA': [37.62, 66.66, 45.2],
+                'GCA': [194.1, 287.58, '-----'],
+                'TCDCA': [231.9, 158.46, 189.3],
+                'GCDCA': [3220.44, 1534.02, 2890.1],
+                '...': ['...', '...', '...']
+            })
+            st.dataframe(example_df, hide_index=True, use_container_width=False)
+            
+            st.info("💡 The pipeline auto-detects bile acid columns and group assignments from your data.")
+
 
 if __name__ == "__main__":
     main()
