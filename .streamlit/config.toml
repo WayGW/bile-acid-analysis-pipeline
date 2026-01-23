@@ -1,8 +1,4 @@
-[theme]
-primaryColor = "#1f77b4"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#f0f2f6"
-textColor = "#262730"
-
+cat > .streamlit/config.toml << 'EOF'
 [server]
 maxUploadSize = 50
+EOF
