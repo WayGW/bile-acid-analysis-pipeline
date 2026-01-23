@@ -26,33 +26,16 @@ pip install -r requirements.txt
 
 ## Usage
 
-### Web Application (Streamlit)
+### Web Application
+https://bile-acid-pipeline.streamlit.app/
 
+### For Local Hosting
 ```bash
 streamlit run app.py
 ```
 
 Then open http://localhost:8501 in your browser.
 
-### Programmatic Usage
-
-```python
-from config import BILE_ACID_PANEL, get_primary, get_secondary
-from modules import BileAcidDataProcessor, StatisticalAnalyzer, BileAcidVisualizer
-
-# Process data
-processor = BileAcidDataProcessor(lod_handling="zero")
-processed = processor.load_and_process("your_data.xlsx")
-
-# Run statistics
-analyzer = StatisticalAnalyzer(alpha=0.05)
-result = analyzer.analyze(processed.sample_data, "TCA", "Group")
-
-# Create visualization
-viz = BileAcidVisualizer()
-fig, ax = viz.plot_group_comparison(processed.sample_data, "TCA", "Group")
-fig.savefig("tca_comparison.png", dpi=300)
-```
 
 ## Data Format
 
