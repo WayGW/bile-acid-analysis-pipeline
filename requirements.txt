@@ -17,7 +17,7 @@ matplotlib>=3.7.0
 seaborn>=0.12.0
 
 # Web application
-streamlit>=1.28.0
+streamlit>=1.33.0  # Required for @st.fragment decorator
 
 # Optional: for enhanced statistics
 # pingouin>=0.5.3

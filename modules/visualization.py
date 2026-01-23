@@ -466,7 +466,8 @@ class BileAcidVisualizer:
         plot_type: str = "box",
         sharey: bool = False,
         max_sig_bars: int = 3,
-        log_scale: bool = False
+        log_scale: bool = False,
+        show_points: bool = True
     ) -> plt.Figure:
         """
         Create multi-panel figure with significance annotations.
@@ -482,6 +483,7 @@ class BileAcidVisualizer:
             sharey: Share y-axis across panels
             max_sig_bars: Maximum significance bars to show per panel
             log_scale: Whether to log10 transform the data for plotting
+            show_points: Whether to overlay individual data points
         """
         # Filter out NaN groups
         data = data.copy()
@@ -525,10 +527,18 @@ class BileAcidVisualizer:
             if plot_type == "box":
                 sns.boxplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
                           hue=group_col, palette=palette, order=groups, legend=False)
+                if show_points:
+                    sns.stripplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
+                                color='black', alpha=0.7, size=6, order=groups, 
+                                jitter=0.2, zorder=10, edgecolor='white', linewidth=0.5)
             elif plot_type == "violin":
                 sns.violinplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
                              hue=group_col, palette=palette, order=groups, 
-                             inner='box', legend=False)
+                             inner=None, legend=False)  # Remove inner box to show points better
+                if show_points:
+                    sns.stripplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
+                                color='black', alpha=0.7, size=6, order=groups,
+                                jitter=0.15, zorder=10, edgecolor='white', linewidth=0.5)
             elif plot_type == "bar":
                 means = plot_data.groupby(group_col)[plot_col].mean()
                 sems = plot_data.groupby(group_col)[plot_col].sem()
@@ -537,6 +547,12 @@ class BileAcidVisualizer:
                       yerr=[sems[g] for g in groups],
                       capsize=3, color=[palette[g] for g in groups],
                       edgecolor='black', linewidth=0.5)
+                if show_points:
+                    for j, g in enumerate(groups):
+                        group_vals = plot_data[plot_data[group_col] == g][plot_col]
+                        jitter = np.random.normal(0, 0.1, len(group_vals))
+                        ax.scatter(j + jitter, group_vals, color='black', alpha=0.7, s=30, 
+                                  zorder=10, edgecolors='white', linewidths=0.5)
                 ax.set_xticks(x)
                 ax.set_xticklabels(groups)
             

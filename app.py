@@ -127,6 +127,112 @@ def get_sig_pairs(result, max_pairs=5):
     return pairs
 
 
+def generate_all_export_figures(processed, results, settings):
+    """Generate all figure variations for export package."""
+    from config.bile_acid_species import get_primary, get_secondary, get_glycine_conjugated, get_taurine_conjugated
+    
+    figures = {}
+    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    group_col = processed.structure.group_col
+    
+    if not group_col or not results:
+        return figures
+    
+    data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
+    data = data[data[group_col].astype(str).str.lower() != 'nan']
+    available_bas = processed.structure.bile_acid_cols
+    
+    # === CONCENTRATIONS TAB FIGURES ===
+    conc_selections = {
+        'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
+        'significant': [b for b in available_bas if b in results.individual_ba_results 
+                       and results.individual_ba_results[b].main_test.significant][:10],
+        'primary': [b for b in get_primary() if b in available_bas][:10],
+        'secondary': [b for b in get_secondary() if b in available_bas][:10],
+    }
+    
+    for sel_name, selected in conc_selections.items():
+        if not selected:
+            continue
+        stats_dict = {b: results.individual_ba_results.get(b) for b in selected if b in results.individual_ba_results}
+        
+        for log_scale in [False, True]:
+            suffix = f"_{sel_name}{'_log' if log_scale else ''}"
+            try:
+                fig = viz.plot_multi_panel_groups_with_stats(
+                    data, selected, group_col, stats_dict, ncols=3,
+                    plot_type=settings['plot_type'], log_scale=log_scale,
+                    show_points=settings['show_points'])
+                figures[f'concentrations{suffix}'] = fig
+            except Exception:
+                pass
+    
+    # === TOTALS TAB FIGURES ===
+    totals_combined = pd.concat([data[[group_col]], processed.totals.loc[data.index]], axis=1)
+    
+    # Key totals
+    key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated', 
+                  'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated']
+    available_totals = [t for t in key_totals if t in totals_combined.columns]
+    
+    if available_totals:
+        totals_stats = {t: results.totals_results.get(t) for t in available_totals if t in results.totals_results}
+        for log_scale in [False, True]:
+            suffix = '_log' if log_scale else ''
+            try:
+                fig = viz.plot_multi_panel_groups_with_stats(
+                    totals_combined, available_totals, group_col, totals_stats, ncols=3,
+                    plot_type=settings['plot_type'], log_scale=log_scale,
+                    show_points=settings['show_points'])
+                figures[f'totals{suffix}'] = fig
+            except Exception:
+                pass
+    
+    # === PERCENTAGES TAB FIGURES ===
+    pct_cols = [col for col in processed.percentages.columns if col.endswith('_pct')]
+    if pct_cols:
+        # Top 10 by mean percentage
+        top_pct = processed.percentages[pct_cols].mean().nlargest(10).index.tolist()
+        pct_combined = pd.concat([data[[group_col]], processed.percentages.loc[data.index, top_pct]], axis=1)
+        
+        # Rename columns for display (remove _pct suffix)
+        display_cols = [col.replace('_pct', '') for col in top_pct]
+        pct_display = pct_combined.rename(columns={old: new for old, new in zip(top_pct, display_cols)})
+        
+        pct_stats = {}
+        for pct_col, disp_col in zip(top_pct, display_cols):
+            if pct_col in results.percentages_results:
+                pct_stats[disp_col] = results.percentages_results[pct_col]
+        
+        try:
+            fig = viz.plot_multi_panel_groups_with_stats(
+                pct_display, display_cols, group_col, pct_stats, ncols=3,
+                plot_type=settings['plot_type'], log_scale=False,
+                show_points=settings['show_points'])
+            figures['percentages_top10'] = fig
+        except Exception:
+            pass
+    
+    # === RATIOS TAB FIGURES ===
+    ratio_cols = [col for col in processed.ratios.columns if not processed.ratios[col].isna().all()]
+    if ratio_cols:
+        ratios_combined = pd.concat([data[[group_col]], processed.ratios.loc[data.index, ratio_cols]], axis=1)
+        ratios_stats = {r: results.ratios_results.get(r) for r in ratio_cols if r in results.ratios_results}
+        
+        for log_scale in [False, True]:
+            suffix = '_log' if log_scale else ''
+            try:
+                fig = viz.plot_multi_panel_groups_with_stats(
+                    ratios_combined, ratio_cols[:9], group_col, ratios_stats, ncols=3,
+                    plot_type=settings['plot_type'], log_scale=log_scale,
+                    show_points=settings['show_points'])
+                figures[f'ratios{suffix}'] = fig
+            except Exception:
+                pass
+    
+    return figures
+
+
 def create_results_zip(processed, results, figures, report_gen):
     """Create ZIP with all results."""
     # Get metadata columns
@@ -265,14 +371,16 @@ def render_concentrations_tab(processed, settings):
         
         # Display version
         fig = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict, 
-                                                     ncols=3, plot_type=settings['plot_type'], log_scale=log_scale)
+                                                     ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
+                                                     show_points=settings['show_points'])
         st.pyplot(fig)
         store_figure(fig, f'concentrations{"_log" if log_scale else ""}')
         plt.close(fig)
         
         # Generate other version for export
         fig_other = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict,
-                                                           ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale)
+                                                           ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
+                                                           show_points=settings['show_points'])
         store_figure(fig_other, f'concentrations{"_log" if not log_scale else ""}')
         plt.close(fig_other)
         
@@ -305,14 +413,16 @@ def render_totals_tab(processed, settings):
     
     # Display version
     fig = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
-                                                 ncols=3, plot_type=settings['plot_type'], log_scale=log_scale)
+                                                 ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
+                                                 show_points=settings['show_points'])
     st.pyplot(fig)
     store_figure(fig, f'totals{"_log" if log_scale else ""}')
     plt.close(fig)
     
     # Generate other version for export
     fig_other = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
-                                                       ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale)
+                                                       ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
+                                                       show_points=settings['show_points'])
     store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
     plt.close(fig_other)
     
@@ -418,7 +528,8 @@ def render_percentages_tab(processed, settings):
     
     fig = viz.plot_multi_panel_groups_with_stats(
         plot_df_display, display_names, group_col, stats_dict,
-        ncols=3, plot_type=settings['plot_type'], log_scale=False
+        ncols=3, plot_type=settings['plot_type'], log_scale=False,
+        show_points=settings['show_points']
     )
     
     # Update y-axis labels to show percentage
@@ -606,7 +717,8 @@ def render_ratios_tab(processed, settings):
     # Multi-panel figure
     fig = viz.plot_multi_panel_groups_with_stats(
         combined, selected_ratios, group_col, stats_dict,
-        ncols=3, plot_type=settings['plot_type'], log_scale=log_scale
+        ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
+        show_points=settings['show_points']
     )
     st.pyplot(fig)
     store_figure(fig, f'ratios{"_log" if log_scale else ""}')
@@ -615,7 +727,8 @@ def render_ratios_tab(processed, settings):
     # Generate other version for export
     fig_other = viz.plot_multi_panel_groups_with_stats(
         combined, selected_ratios, group_col, stats_dict,
-        ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale
+        ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
+        show_points=settings['show_points']
     )
     store_figure(fig_other, f'ratios{"_log" if not log_scale else ""}')
     plt.close(fig_other)
@@ -701,6 +814,7 @@ def render_statistics_tab(processed, settings):
         st.info("No significant percentage differences.")
 
 
+@st.fragment
 def render_export_tab(processed, settings):
     """Export tab."""
     st.markdown("### Export Results")
@@ -730,27 +844,39 @@ def render_export_tab(processed, settings):
                 f"📥 {name} (CSV)", 
                 export_df.to_csv(index=False), 
                 f"bile_acid_{name.lower()}.csv", 
-                "text/csv"
+                "text/csv",
+                key=f"download_{name.lower()}"
             )
     
     with col2:
+        st.markdown("#### Complete Reports")
         if report_gen:
             buf = BytesIO()
             report_gen.save_excel_report(buf)
             buf.seek(0)
             st.download_button("📥 Statistical Report (Excel)", buf.getvalue(),
                               f"statistical_report_{datetime.now():%Y%m%d}.xlsx",
-                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                              key="download_excel_report")
+        
+        # Generate all figures and ZIP
+        with st.spinner("Generating all figures for export..."):
+            # Generate comprehensive figure set for all dropdown options
+            all_figures = generate_all_export_figures(processed, results, settings)
+            # Merge with any existing figures (e.g., from viewing tabs)
+            combined_figures = {**st.session_state.figures, **all_figures}
+            zip_bytes = create_results_zip(processed, results, combined_figures, report_gen)
+        
+        st.download_button("📥 Complete Package (ZIP)", zip_bytes, 
+                          f"bile_acid_analysis_{datetime.now():%Y%m%d_%H%M}.zip", 
+                          "application/zip",
+                          key="download_zip")
+        
+        st.caption(f"📊 Package includes {len(combined_figures)} figures covering all analysis options")
     
     st.markdown("---")
-    if st.button("📦 Generate Complete Package", type="primary"):
-        with st.spinner("Creating ZIP..."):
-            zip_bytes = create_results_zip(processed, results, st.session_state.figures, report_gen)
-            st.download_button("📥 Download ZIP", zip_bytes, 
-                              f"bile_acid_analysis_{datetime.now():%Y%m%d_%H%M}.zip", "application/zip")
-    
-    st.markdown("---")
-    if report_gen and st.button("🎨 Generate Summary Figure"):
+    st.markdown("#### Summary Figure")
+    if report_gen and st.button("🎨 Generate Summary Figure", key="gen_summary_fig"):
         plotter = SignificancePlotter()
         fig = plotter.plot_multi_panel_with_significance(
             processed.sample_data, processed.structure.group_col, report_gen,
@@ -758,8 +884,8 @@ def render_export_tab(processed, settings):
         st.pyplot(fig)
         store_figure(fig, 'summary')
         c1, c2 = st.columns(2)
-        c1.download_button("📥 PNG", fig_to_bytes(fig), "summary.png", "image/png")
-        c2.download_button("📥 PDF", fig_to_bytes(fig, 'pdf'), "summary.pdf", "application/pdf")
+        c1.download_button("📥 PNG", fig_to_bytes(fig), "summary.png", "image/png", key="download_summary_png")
+        c2.download_button("📥 PDF", fig_to_bytes(fig, 'pdf'), "summary.pdf", "application/pdf", key="download_summary_pdf")
         plt.close(fig)
 
 
