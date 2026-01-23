@@ -35,26 +35,6 @@ from modules.report_generation import (
 st.set_page_config(page_title="Bile Acid Analysis Pipeline", page_icon="🧬", layout="wide")
 
 
-st.markdown("# 🧬 Bile Acid Analysis Pipeline")
-
-# Add disclaimer
-with st.expander("⚠️ Privacy & Usage Notice", expanded=False):
-    st.markdown("""
-    **Data Privacy:**
-    - Uploaded files are processed in memory only
-    - No data is stored on our servers after your session ends
-    - Files are automatically deleted when you close the browser
-    
-    **Intended Use:**
-    - This tool is for research and educational purposes only
-    - Not intended for clinical diagnosis
-    - Always verify results with appropriate statistical software
-    
-    **Open Source:**
-    - [View source code on GitHub](https://github.com/WayGW/bile-acid-analysis-pipeline)
-    """)
-
-
 def init_session_state():
     """Initialize session state variables."""
     defaults = {
@@ -75,8 +55,7 @@ def get_data_affecting_settings(settings):
     """Extract settings that affect data processing and statistics."""
     return {
         'lod_handling': settings['lod_handling'],
-        'custom_lod': settings.get('custom_lod'),
-        'sample_matrix': settings['sample_matrix'],
+        'lod_value': settings['lod_value'],
         'alpha': settings['alpha']
     }
 
@@ -198,19 +177,17 @@ def render_sidebar():
     """Render sidebar settings."""
     st.sidebar.markdown("## ⚙️ Settings")
     
-    from config.sample_matrices import SAMPLE_MATRICES, get_matrix_display_names
-    matrix_options = get_matrix_display_names()
-    sample_matrix = st.sidebar.selectbox("Sample matrix", list(matrix_options.keys()), 
-                                         format_func=lambda x: matrix_options[x])
-    selected_matrix = SAMPLE_MATRICES[sample_matrix]
-    st.sidebar.caption(f"LOD: {selected_matrix.default_lod} {selected_matrix.units}")
-    
-    use_custom_lod = st.sidebar.checkbox("Override LOD")
-    custom_lod = st.sidebar.number_input("Custom LOD", 0.0, 100.0, selected_matrix.default_lod) if use_custom_lod else None
+    # LOD Settings
+    st.sidebar.markdown("### 📊 Detection Limits")
+    default_lod = 0.3  # Default LOD in nmol/L
+    lod_value = st.sidebar.number_input("LOD (nmol/L)", 0.0, 100.0, default_lod, step=0.1,
+                                        help="Limit of Detection - values below this are handled according to the setting below")
     
     lod_handling = st.sidebar.selectbox("Below LOD handling", ["lod", "half_lod", "zero", "half_min", "drop"],
                                         format_func=lambda x: {"lod": "LOD value", "half_lod": "LOD/2", 
                                                                "zero": "Zero", "half_min": "Min/2", "drop": "NaN"}[x])
+    
+    st.sidebar.markdown("### 📈 Analysis")
     alpha = st.sidebar.slider("Significance (α)", 0.01, 0.10, 0.05, 0.01)
     plot_type = st.sidebar.selectbox("Plot type", ["box", "violin", "bar"])
     show_points = st.sidebar.checkbox("Show data points", True)
@@ -241,8 +218,7 @@ def render_sidebar():
                                       format_func=lambda x: style_options[x])
     
     return {'lod_handling': lod_handling, 'alpha': alpha, 'plot_type': plot_type,
-            'show_points': show_points, 'sample_matrix': sample_matrix,
-            'custom_lod': custom_lod, 'matrix_info': selected_matrix,
+            'show_points': show_points, 'lod_value': lod_value,
             'color_palette': color_palette, 'plot_style': plot_style}
 
 
@@ -792,6 +768,7 @@ def main():
     init_session_state()
     settings = render_sidebar()
     
+    st.markdown("# 🧬 Bile Acid Analysis Pipeline")
     uploaded = st.file_uploader("Upload Excel/ODS file", ['xlsx', 'xls', 'ods'])
     
     if uploaded:
@@ -814,8 +791,7 @@ def main():
                     tmp_path = tmp.name
                 
                 try:
-                    lod = settings['custom_lod'] or settings['matrix_info'].default_lod
-                    processor = BileAcidDataProcessor(lod_handling=settings['lod_handling'], lod_value=lod)
+                    processor = BileAcidDataProcessor(lod_handling=settings['lod_handling'], lod_value=settings['lod_value'])
                     processed = processor.load_and_process(tmp_path)
                     st.session_state.processed_data = processed
                     if settings_changed:
@@ -849,35 +825,35 @@ def main():
         with tabs[3]: render_ratios_tab(processed, settings)
         with tabs[4]: render_statistics_tab(processed, settings)
         with tabs[5]: render_export_tab(processed, settings)
-
+    
     else:
-            # Show expected input format when no data is loaded
-            st.markdown("---")
-            st.markdown("### 📋 Expected Input Format")
-            
-            st.markdown("""
-            - **Rows:** Samples
-            - **Columns:** Bile acid species (matching panel names)
-            - **First column(s):** Sample ID, Group/Type
-            - **Values:** Concentrations (typically nmol/L)
-            - **Below LOD:** Can be "-----", "LOD", "BLQ", "ND", etc.
-            """)
-            
-            st.markdown("**Example:**")
-            
-            # Create example dataframe
-            example_df = pd.DataFrame({
-                'Type': ['HD-1', 'HD-2', 'AC-1'],
-                'Sample_ID': ['81-0210', '81-0211', '60-677'],
-                'TCA': [37.62, 66.66, 45.2],
-                'GCA': [194.1, 287.58, '-----'],
-                'TCDCA': [231.9, 158.46, 189.3],
-                'GCDCA': [3220.44, 1534.02, 2890.1],
-                '...': ['...', '...', '...']
-            })
-            st.dataframe(example_df, hide_index=True, use_container_width=False)
-            
-            st.info("💡 The pipeline auto-detects bile acid columns and group assignments from your data.")
+        # Show expected input format when no data is loaded
+        st.markdown("---")
+        st.markdown("### 📋 Expected Input Format")
+        
+        st.markdown("""
+        - **Rows:** Samples
+        - **Columns:** Bile acid species (matching panel names)
+        - **First column(s):** Sample ID, Group/Type
+        - **Values:** Concentrations (typically nmol/L)
+        - **Below LOD:** Can be "-----", "LOD", "BLQ", "ND", etc.
+        """)
+        
+        st.markdown("**Example:**")
+        
+        # Create example dataframe
+        example_df = pd.DataFrame({
+            'Type': ['HD-1', 'HD-2', 'AC-1'],
+            'Sample_ID': ['81-0210', '81-0211', '60-677'],
+            'TCA': [37.62, 66.66, 45.2],
+            'GCA': [194.1, 287.58, '-----'],
+            'TCDCA': [231.9, 158.46, 189.3],
+            'GCDCA': [3220.44, 1534.02, 2890.1],
+            '...': ['...', '...', '...']
+        })
+        st.dataframe(example_df, hide_index=True, use_container_width=False)
+        
+        st.info("💡 The pipeline auto-detects bile acid columns and group assignments from your data.")
 
 
 if __name__ == "__main__":
