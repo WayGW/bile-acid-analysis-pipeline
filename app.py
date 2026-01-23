@@ -35,6 +35,26 @@ from modules.report_generation import (
 st.set_page_config(page_title="Bile Acid Analysis Pipeline", page_icon="🧬", layout="wide")
 
 
+st.markdown("# 🧬 Bile Acid Analysis Pipeline")
+
+# Add disclaimer
+with st.expander("⚠️ Privacy & Usage Notice", expanded=False):
+    st.markdown("""
+    **Data Privacy:**
+    - Uploaded files are processed in memory only
+    - No data is stored on our servers after your session ends
+    - Files are automatically deleted when you close the browser
+    
+    **Intended Use:**
+    - This tool is for research and educational purposes only
+    - Not intended for clinical diagnosis
+    - Always verify results with appropriate statistical software
+    
+    **Open Source:**
+    - [View source code on GitHub](https://github.com/WayGW/bile-acid-analysis-pipeline)
+    """)
+
+
 def init_session_state():
     """Initialize session state variables."""
     defaults = {
@@ -772,7 +792,6 @@ def main():
     init_session_state()
     settings = render_sidebar()
     
-    st.markdown("# 🧬 Bile Acid Analysis Pipeline")
     uploaded = st.file_uploader("Upload Excel/ODS file", ['xlsx', 'xls', 'ods'])
     
     if uploaded:
