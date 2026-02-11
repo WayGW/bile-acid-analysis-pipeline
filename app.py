@@ -383,8 +383,8 @@ def render_sidebar():
     st.sidebar.markdown("### 📊 Detection Limits")
     lod_handling = st.sidebar.selectbox(
         "Below-LOD handling",
-        ["half_lod", "lod", "zero", "drop"],
-        format_func=lambda x: {"half_lod": "LOD/2 (recommended)", "lod": "LOD value", 
+        [ "lod", "half_lod", "zero", "drop"],
+        format_func=lambda x: { "lod": "LOD value (recommended)", "half_lod": "LOD/2",
                                "zero": "Zero", "drop": "NaN (exclude)"}[x],
         help="LOD values are auto-detected per analyte from the LC-MS standards sheet"
     )
