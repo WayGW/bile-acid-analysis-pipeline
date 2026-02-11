@@ -43,6 +43,10 @@ class DataStructureInfo:
     data_start_row: int = 0
     units: str = "nmol/L"
     sheet_used: Optional[str] = None  # Which sheet the data was loaded from
+    analyte_lods: Dict[str, float] = field(default_factory=dict)  # Per-analyte LODs
+    analyte_lod_counts: Dict[str, int] = field(default_factory=dict)  # Count of below-LOD values per analyte
+    analyte_lod_rows: Dict[str, List[int]] = field(default_factory=dict)  # Row indices with LOD replacements per analyte
+    lod_source: str = "default"  # "standards" or "default"
 
 
 @dataclass
@@ -96,12 +100,20 @@ class BileAcidDataProcessor:
         r'blank',
     ]
     
-    LOD_VALUES = ['-----', 'LOD', 'BLQ', 'ND', 'N/D', '<LOD', '<LOQ', 'BLOQ']
+    LOD_VALUES = ['-----', '----', '---', 'LOD', 'BLQ', 'ND', 'N/D', '<LOD', '<LOQ', 'BLOQ', '']
+    
+    # Patterns that indicate the LC-MS raw data sheet with standards
+    LCMS_DATA_PATTERNS = [
+        r'lc[\s_-]*ms[\s_-]*data',
+        r'^data$',
+        r'raw[\s_-]*data',
+        r'standards',
+    ]
     
     def __init__(
         self,
-        lod_handling: str = "zero",  # "zero", "half_min", "drop"
-        lod_value: float = 0.1,  # Default LOD value for ratio calculations
+        lod_handling: str = "half_lod",  # "zero", "lod", "half_lod", "half_min", "drop"
+        lod_value: float = 0.1,  # Default/fallback LOD value when auto-detection fails
         custom_bile_acids: Optional[Dict] = None
     ):
         """
@@ -110,13 +122,15 @@ class BileAcidDataProcessor:
         Args:
             lod_handling: How to handle below-LOD values
                 - "zero": Replace with 0
+                - "lod": Replace with the analyte's auto-detected LOD value
+                - "half_lod": Replace with half the analyte's LOD value
                 - "half_min": Replace with half the minimum detected value
                 - "drop": Keep as NaN
-            lod_value: Limit of detection value (used for ratio calculations)
+            lod_value: Default/fallback LOD value when auto-detection fails
             custom_bile_acids: Additional bile acid definitions to merge with panel
         """
         self.lod_handling = lod_handling
-        self.lod_value = lod_value
+        self.lod_value = lod_value  # Fallback LOD
         
         # Merge custom BAs if provided
         self.bile_acid_panel = BILE_ACID_PANEL.copy()
@@ -226,6 +240,163 @@ class BileAcidDataProcessor:
         
         # Default to first valid sheet
         return valid_sheets[0] if valid_sheets else 0
+    
+    def _find_lcms_data_sheet(self, sheet_names: List[str]) -> Optional[str]:
+        """Find the LC-MS data sheet that contains standard curves."""
+        for pattern in self.LCMS_DATA_PATTERNS:
+            for sheet in sheet_names:
+                if re.search(pattern, sheet, re.IGNORECASE):
+                    return sheet
+        
+        # Often the first sheet is the LC-MS data
+        if sheet_names:
+            first_lower = sheet_names[0].lower()
+            if 'lc' in first_lower or 'data' in first_lower or 'ms' in first_lower:
+                return sheet_names[0]
+        
+        return None
+    
+    def _extract_lods_from_standards(
+        self, 
+        filepath: Union[str, Path],
+        bile_acid_cols: List[str]
+    ) -> Dict[str, float]:
+        """
+        Extract per-analyte LOD from standard curve rows in LC-MS data sheet.
+        
+        Looks for rows with "Std X nM" or "Std X nmol/L" pattern and determines
+        the lowest successful standard (with a valid numeric reading) for each analyte.
+        
+        Args:
+            filepath: Path to Excel file
+            bile_acid_cols: List of bile acid column names to look for
+            
+        Returns:
+            Dict mapping analyte names to their LOD values
+        """
+        analyte_lods = {}
+        
+        try:
+            # Get available sheets
+            sheets = self.get_available_sheets(filepath)
+            
+            # Find LC-MS data sheet
+            lcms_sheet = self._find_lcms_data_sheet(sheets)
+            if lcms_sheet is None:
+                return analyte_lods
+            
+            # Load the LC-MS data sheet
+            filepath = Path(filepath)
+            if filepath.suffix.lower() == '.ods':
+                engine = 'odf'
+            elif filepath.suffix.lower() in ['.xlsx', '.xlsm']:
+                engine = 'openpyxl'
+            elif filepath.suffix.lower() == '.xls':
+                engine = 'xlrd'
+            else:
+                engine = None
+            
+            df = pd.read_excel(filepath, sheet_name=lcms_sheet, header=None, engine=engine)
+            
+            # Find header row (row containing bile acid names)
+            header_row = self._find_header_row(df)
+            if header_row < 0:
+                return analyte_lods
+            
+            # Set column names
+            df.columns = df.iloc[header_row].astype(str).str.strip()
+            df = df.iloc[header_row + 1:].reset_index(drop=True)
+            
+            # Find the column containing standard identifiers
+            # Look for "Data Filename" or similar column with Std values
+            std_col = None
+            for col in df.columns[:5]:  # Check first few columns
+                col_str = str(col).lower()
+                if 'data' in col_str or 'filename' in col_str or 'name' in col_str:
+                    if df[col].astype(str).str.contains('Std', case=False, na=False).any():
+                        std_col = col
+                        break
+            
+            if std_col is None:
+                # Try first column
+                first_col = df.columns[0]
+                if df[first_col].astype(str).str.contains('Std', case=False, na=False).any():
+                    std_col = first_col
+            
+            if std_col is None:
+                return analyte_lods
+            
+            # Parse standard rows and extract concentrations
+            # Pattern matches: "Std 0.3 nM", "Std 1.0 nM", "Std 3  nmol/L", "Std 10", etc.
+            std_pattern = re.compile(r'Std\s*(\d+(?:\.\d+)?)\s*(?:nM|nmol/?L|ng/?mL)?', re.IGNORECASE)
+            
+            std_rows = []  # List of (row_index, concentration)
+            for idx in df.index:
+                val = str(df.loc[idx, std_col])
+                match = std_pattern.search(val)
+                if match:
+                    conc = float(match.group(1))
+                    std_rows.append((idx, conc))
+            
+            if not std_rows:
+                return analyte_lods
+            
+            # Sort by concentration (lowest first)
+            std_rows.sort(key=lambda x: x[1])
+            
+            # For each analyte column, find the lowest concentration with a valid value
+            for col in df.columns:
+                col_str = str(col).strip()
+                
+                # Check if this column is an analyte we care about
+                if col_str not in bile_acid_cols and not self._is_analyte_column(col_str):
+                    continue
+                
+                # Find lowest successful standard for this analyte
+                for idx, conc in std_rows:
+                    val = df.loc[idx, col]
+                    if self._is_valid_measurement(val):
+                        analyte_lods[col_str] = conc
+                        break
+            
+            return analyte_lods
+            
+        except Exception as e:
+            warnings.warn(f"Could not extract LODs from standards: {e}")
+            return analyte_lods
+    
+    def _is_valid_measurement(self, val) -> bool:
+        """Check if a value is a valid measurement (not blank, not '-----', not NaN)."""
+        if pd.isna(val):
+            return False
+        
+        if isinstance(val, (int, float)):
+            return not np.isnan(val) and val > 0
+        
+        if isinstance(val, str):
+            val_clean = val.strip()
+            if val_clean in self.LOD_VALUES or val_clean.lower() in [v.lower() for v in self.LOD_VALUES if v]:
+                return False
+            try:
+                num = float(val_clean)
+                return num > 0
+            except ValueError:
+                return False
+        
+        return False
+    
+    def _is_analyte_column(self, col: str) -> bool:
+        """Check if column name looks like a bile acid analyte."""
+        if not col or pd.isna(col):
+            return False
+        
+        col_str = str(col).strip()
+        
+        # Check if it's in the bile acid panel
+        if col_str in self.bile_acid_panel:
+            return True
+        
+        return False
     
     def get_available_sheets(self, filepath: Union[str, Path]) -> List[str]:
         """Get list of available sheet names in a file."""
@@ -361,7 +532,7 @@ class BileAcidDataProcessor:
         Clean the raw data:
         - Set proper column names
         - Remove standard rows
-        - Handle LOD values
+        - Handle LOD values (per-analyte)
         - Convert to numeric
         - Remove rows with NaN/empty group values
         """
@@ -377,10 +548,22 @@ class BileAcidDataProcessor:
         if adjusted_std_rows:
             df = df.drop(index=adjusted_std_rows).reset_index(drop=True)
         
-        # Handle LOD values and convert to numeric
+        # Handle LOD values and convert to numeric (using per-analyte LODs)
+        # Also track how many values and which rows were below LOD for each analyte
+        lod_counts = {}
+        lod_rows = {}
         for col in structure.bile_acid_cols:
             if col in df.columns:
-                df[col] = self._clean_numeric_column(df[col], structure)
+                # Get this analyte's LOD (or use fallback)
+                analyte_lod = structure.analyte_lods.get(col, self.lod_value)
+                cleaned_series, below_lod_count, below_lod_indices = self._clean_numeric_column_with_count(df[col], analyte_lod)
+                df[col] = cleaned_series
+                lod_counts[col] = below_lod_count
+                lod_rows[col] = below_lod_indices
+        
+        # Store the LOD counts and row indices in the structure
+        structure.analyte_lod_counts = lod_counts
+        structure.analyte_lod_rows = lod_rows
         
         # Remove rows where group column is NaN or empty
         if structure.group_col and structure.group_col in df.columns:
@@ -392,31 +575,46 @@ class BileAcidDataProcessor:
                 (group_series.str.lower() != 'nan') &
                 (group_series.str.lower() != 'none')
             )
+            
+            # Create mapping from old indices to new indices
+            old_to_new = {}
+            new_idx = 0
+            for old_idx in df.index:
+                if valid_mask.loc[old_idx]:
+                    old_to_new[old_idx] = new_idx
+                    new_idx += 1
+            
+            # Update lod_rows to use new indices
+            for col in lod_rows:
+                lod_rows[col] = [old_to_new[i] for i in lod_rows[col] if i in old_to_new]
+            structure.analyte_lod_rows = lod_rows
+            
             df = df[valid_mask].reset_index(drop=True)
         
         return df
     
-    def _clean_numeric_column(
+    def _clean_numeric_column_with_count(
         self, 
         series: pd.Series,
-        structure: DataStructureInfo
-    ) -> pd.Series:
+        analyte_lod: float
+    ) -> Tuple[pd.Series, int, List[int]]:
         """
-        Clean a single numeric column.
+        Clean a single numeric column and count below-LOD values.
         
-        Handles below-LOD markers (like '-----', 'LOD', 'BLQ') based on lod_handling:
-        - "zero": Replace with 0 (legacy behavior)
-        - "lod": Replace with the LOD value from sample matrix
-        - "half_lod": Replace with half the LOD value
-        - "half_min": Replace with half the minimum detected value
-        - "drop": Keep as NaN (will exclude from calculations)
+        Handles below-LOD markers (like '-----', 'LOD', 'BLQ') based on lod_handling,
+        using the per-analyte LOD value.
+        
+        Returns:
+            Tuple of (cleaned series, count of below-LOD values, list of row indices)
         """
         # Convert series to object type first to avoid downcasting issues
         series = series.astype(object)
         
         # Replace LOD marker values with None (will become NaN after to_numeric)
-        lod_values_all = self.LOD_VALUES + [v.lower() for v in self.LOD_VALUES]
-        mask = series.isin(lod_values_all)
+        lod_values_all = self.LOD_VALUES + [v.lower() for v in self.LOD_VALUES if v]
+        mask = series.astype(str).str.strip().isin(lod_values_all)
+        below_lod_count = mask.sum()  # Count how many were below LOD
+        below_lod_indices = list(series.index[mask])  # Get row indices
         series = series.where(~mask, None)
         
         # Convert to numeric
@@ -426,20 +624,20 @@ class BileAcidDataProcessor:
         if self.lod_handling == "zero":
             series = series.fillna(0)
         elif self.lod_handling == "lod":
-            # Use the LOD value from sample matrix
-            series = series.fillna(self.lod_value)
+            # Use the analyte-specific LOD value
+            series = series.fillna(analyte_lod)
         elif self.lod_handling == "half_lod":
-            # Use half the LOD value
-            series = series.fillna(self.lod_value / 2)
+            # Use half the analyte-specific LOD value
+            series = series.fillna(analyte_lod / 2)
         elif self.lod_handling == "half_min":
             min_val = series[series > 0].min()
             if pd.notna(min_val):
                 series = series.fillna(min_val / 2)
             else:
-                series = series.fillna(self.lod_value / 2)
+                series = series.fillna(analyte_lod / 2)
         # "drop" leaves NaN
         
-        return series
+        return series, below_lod_count, below_lod_indices
     
     def calculate_totals(
         self, 
@@ -583,7 +781,17 @@ class BileAcidDataProcessor:
         if group_col:
             structure.group_col = group_col
         
-        # Clean data
+        # Extract per-analyte LODs from standard curves (before cleaning)
+        analyte_lods = self._extract_lods_from_standards(filepath, structure.bile_acid_cols)
+        if analyte_lods:
+            structure.analyte_lods = analyte_lods
+            structure.lod_source = "standards"
+        else:
+            # Fallback: use default LOD for all analytes
+            structure.analyte_lods = {col: self.lod_value for col in structure.bile_acid_cols}
+            structure.lod_source = "default"
+        
+        # Clean data (uses per-analyte LODs)
         clean_df = self.clean_data(raw_df.copy(), structure)
         
         # Extract sample data (with metadata)
@@ -657,6 +865,9 @@ def validate_data_quality(processed: ProcessedData) -> Dict[str, Any]:
         'groups': None,
         'missing_data': {},
         'zero_prevalence': {},
+        'lod_source': processed.structure.lod_source,
+        'analyte_lods': processed.structure.analyte_lods,
+        'analyte_lod_counts': processed.structure.analyte_lod_counts,
     }
     
     # Group info
