@@ -287,7 +287,7 @@ def create_full_data_excel_with_highlighting(processed, lod_handling='half_lod')
     """Create Excel workbook with yellow highlighting on cells where LOD values were replaced."""
     from openpyxl.styles import PatternFill
     
-    lod_display = {"half_lod": "LOD/2", "lod": "LOD value", "zero": "Zero", "drop": "NaN (excluded)"}
+    lod_display = { "lod": "LOD value","half_lod": "LOD/2", "zero": "Zero", "drop": "NaN (excluded)"}
     
     buf = BytesIO()
     
