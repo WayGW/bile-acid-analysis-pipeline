@@ -55,7 +55,6 @@ def get_data_affecting_settings(settings):
     """Extract settings that affect data processing and statistics."""
     return {
         'lod_handling': settings['lod_handling'],
-        'lod_value': settings['lod_value'],
         'alpha': settings['alpha']
     }
 
@@ -233,7 +232,7 @@ def generate_all_export_figures(processed, results, settings):
     return figures
 
 
-def create_results_zip(processed, results, figures, report_gen):
+def create_results_zip(processed, results, figures, report_gen, settings=None):
     """Create ZIP with all results."""
     # Get metadata columns
     id_cols = []
@@ -262,6 +261,11 @@ def create_results_zip(processed, results, figures, report_gen):
         full.to_csv(csv_buf, index=False)
         zf.writestr('data/full_analysis.csv', csv_buf.getvalue())
         
+        # LOD-highlighted Excel
+        lod_handling = settings.get('lod_handling', 'half_lod') if settings else 'half_lod'
+        lod_excel_bytes = create_full_data_excel_with_highlighting(processed, lod_handling)
+        zf.writestr('data/full_data_lod_highlighted.xlsx', lod_excel_bytes)
+        
         # Excel report
         if report_gen:
             excel_buf = BytesIO()
@@ -279,19 +283,111 @@ def create_results_zip(processed, results, figures, report_gen):
     return buf.getvalue()
 
 
+def create_full_data_excel_with_highlighting(processed, lod_handling='half_lod') -> bytes:
+    """Create Excel workbook with yellow highlighting on cells where LOD values were replaced."""
+    from openpyxl.styles import PatternFill
+    
+    lod_display = {"half_lod": "LOD/2", "lod": "LOD value", "zero": "Zero", "drop": "NaN (excluded)"}
+    
+    buf = BytesIO()
+    
+    # Get metadata columns
+    id_cols = []
+    if processed.structure.sample_id_col and processed.structure.sample_id_col in processed.sample_data.columns:
+        id_cols.append(processed.structure.sample_id_col)
+    if processed.structure.group_col and processed.structure.group_col in processed.sample_data.columns:
+        id_cols.append(processed.structure.group_col)
+    
+    metadata = processed.sample_data[id_cols] if id_cols else pd.DataFrame(index=processed.sample_data.index)
+    
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        # Concentrations sheet with highlighting
+        conc_df = pd.concat([metadata, processed.concentrations], axis=1)
+        conc_df.to_excel(writer, sheet_name='Concentrations', index=False)
+        
+        # Totals
+        totals_df = pd.concat([metadata, processed.totals], axis=1)
+        totals_df.to_excel(writer, sheet_name='Totals', index=False)
+        
+        # Ratios
+        ratios_df = pd.concat([metadata, processed.ratios], axis=1)
+        ratios_df.to_excel(writer, sheet_name='Ratios', index=False)
+        
+        # Percentages
+        pct_df = pd.concat([metadata, processed.percentages], axis=1)
+        pct_df.to_excel(writer, sheet_name='Percentages', index=False)
+        
+        # LOD Summary sheet
+        lod_summary_rows = []
+        for ba in processed.structure.bile_acid_cols:
+            lod_val = processed.structure.analyte_lods.get(ba, 'N/A')
+            count = processed.structure.analyte_lod_counts.get(ba, 0)
+            n = len(processed.sample_data)
+            
+            # Compute replacement value based on handling method
+            if isinstance(lod_val, (int, float)):
+                if lod_handling == 'half_lod':
+                    repl = lod_val / 2
+                elif lod_handling == 'lod':
+                    repl = lod_val
+                elif lod_handling == 'zero':
+                    repl = 0
+                else:
+                    repl = 'NaN'
+            else:
+                repl = 'N/A'
+            
+            lod_summary_rows.append({
+                'Analyte': ba,
+                'LOD (nM)': lod_val,
+                'Replacement Value': repl,
+                'Samples Below LOD': count,
+                '% Below LOD': f"{count/n*100:.1f}" if n > 0 else "0",
+                'Total Samples': n
+            })
+        lod_df = pd.DataFrame(lod_summary_rows)
+        lod_df.to_excel(writer, sheet_name='LOD Summary', index=False)
+        
+        # Legend sheet
+        legend_data = pd.DataFrame({
+            'Item': ['Yellow cells', 'LOD Source', 'LOD Handling'],
+            'Description': [
+                f'Value was below LOD and replaced with {lod_display.get(lod_handling, lod_handling)}',
+                processed.structure.lod_source,
+                f'{lod_handling} ({lod_display.get(lod_handling, lod_handling)})'
+            ]
+        })
+        legend_data.to_excel(writer, sheet_name='Legend', index=False)
+        
+        # Apply yellow highlighting to LOD-replaced cells on Concentrations sheet
+        yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+        ws = writer.sheets['Concentrations']
+        
+        # Map column names to Excel column indices (1-based, after metadata columns)
+        col_headers = list(conc_df.columns)
+        for ba, row_indices in processed.structure.analyte_lod_rows.items():
+            if ba in col_headers:
+                col_idx = col_headers.index(ba) + 1  # 1-based for openpyxl
+                for row_idx in row_indices:
+                    # +2 because Excel is 1-based and row 1 is the header
+                    ws.cell(row=row_idx + 2, column=col_idx).fill = yellow_fill
+    
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def render_sidebar():
     """Render sidebar settings."""
     st.sidebar.markdown("## ⚙️ Settings")
     
-    # LOD Settings
     st.sidebar.markdown("### 📊 Detection Limits")
-    default_lod = 0.3  # Default LOD in nmol/L
-    lod_value = st.sidebar.number_input("LOD (nmol/L)", 0.0, 100.0, default_lod, step=0.1,
-                                        help="Limit of Detection - values below this are handled according to the setting below")
-    
-    lod_handling = st.sidebar.selectbox("Below LOD handling", ["lod", "half_lod", "zero", "half_min", "drop"],
-                                        format_func=lambda x: {"lod": "LOD value", "half_lod": "LOD/2", 
-                                                               "zero": "Zero", "half_min": "Min/2", "drop": "NaN"}[x])
+    lod_handling = st.sidebar.selectbox(
+        "Below-LOD handling",
+        ["half_lod", "lod", "zero", "drop"],
+        format_func=lambda x: {"half_lod": "LOD/2 (recommended)", "lod": "LOD value", 
+                               "zero": "Zero", "drop": "NaN (exclude)"}[x],
+        help="LOD values are auto-detected per analyte from the LC-MS standards sheet"
+    )
     
     st.sidebar.markdown("### 📈 Analysis")
     alpha = st.sidebar.slider("Significance (α)", 0.01, 0.10, 0.05, 0.01)
@@ -324,7 +420,7 @@ def render_sidebar():
                                       format_func=lambda x: style_options[x])
     
     return {'lod_handling': lod_handling, 'alpha': alpha, 'plot_type': plot_type,
-            'show_points': show_points, 'lod_value': lod_value,
+            'show_points': show_points,
             'color_palette': color_palette, 'plot_style': plot_style}
 
 
@@ -847,6 +943,19 @@ def render_export_tab(processed, settings):
                 "text/csv",
                 key=f"download_{name.lower()}"
             )
+        
+        # LOD-highlighted Excel export
+        st.markdown("---")
+        lod_excel = create_full_data_excel_with_highlighting(processed, settings['lod_handling'])
+        lod_label = {"half_lod": "LOD/2", "lod": "LOD value", "zero": "Zero", "drop": "NaN"}
+        st.download_button(
+            "📥 All Data (Excel) - LOD highlighted",
+            lod_excel,
+            f"bile_acid_data_lod_highlighted_{datetime.now():%Y%m%d}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_lod_excel"
+        )
+        st.caption(f"Yellow cells = values replaced (below LOD → {lod_label[settings['lod_handling']]})")
     
     with col2:
         st.markdown("#### Complete Reports")
@@ -865,7 +974,7 @@ def render_export_tab(processed, settings):
             all_figures = generate_all_export_figures(processed, results, settings)
             # Merge with any existing figures (e.g., from viewing tabs)
             combined_figures = {**st.session_state.figures, **all_figures}
-            zip_bytes = create_results_zip(processed, results, combined_figures, report_gen)
+            zip_bytes = create_results_zip(processed, results, combined_figures, report_gen, settings)
         
         st.download_button("📥 Complete Package (ZIP)", zip_bytes, 
                           f"bile_acid_analysis_{datetime.now():%Y%m%d_%H%M}.zip", 
@@ -917,7 +1026,7 @@ def main():
                     tmp_path = tmp.name
                 
                 try:
-                    processor = BileAcidDataProcessor(lod_handling=settings['lod_handling'], lod_value=settings['lod_value'])
+                    processor = BileAcidDataProcessor(lod_handling=settings['lod_handling'])
                     processed = processor.load_and_process(tmp_path)
                     st.session_state.processed_data = processed
                     if settings_changed:
@@ -937,9 +1046,30 @@ def main():
         c2.metric("Bile Acids", quality['n_bile_acids_detected'])
         c3.metric("Groups", quality.get('n_groups', 'N/A'))
         
-        # Show current LOD handling setting
-        lod_display = {"lod": "LOD value", "half_lod": "LOD/2", "zero": "Zero", "half_min": "Min/2", "drop": "NaN"}
-        st.caption(f"📊 LOD handling: **{lod_display[settings['lod_handling']]}** | α = **{settings['alpha']}**")
+        # Show LOD info
+        lod_source_label = "Auto-detected from standards" if quality.get('lod_source') == 'standards' else "Default (no standards found)"
+        lod_display = {"half_lod": "LOD/2", "lod": "LOD value", "zero": "Zero", "drop": "NaN"}
+        st.caption(f"📊 LOD: **{lod_source_label}** (below-LOD → {lod_display[settings['lod_handling']]}) | α = **{settings['alpha']}**")
+        
+        # Show per-analyte LOD details
+        if quality.get('analyte_lods'):
+            with st.expander("🔬 Per-Analyte LOD Details"):
+                lod_rows = []
+                for ba in processed.structure.bile_acid_cols:
+                    lod_val = quality['analyte_lods'].get(ba, 'N/A')
+                    count = quality.get('analyte_lod_counts', {}).get(ba, 0)
+                    n_samples = quality['n_samples']
+                    pct = f"{count/n_samples*100:.0f}%" if n_samples > 0 else "0%"
+                    lod_rows.append({
+                        'Analyte': ba,
+                        'LOD (nM)': lod_val if isinstance(lod_val, str) else f"{lod_val:.1f}",
+                        'Below LOD': count,
+                        '% Below': pct
+                    })
+                if lod_rows:
+                    lod_df = pd.DataFrame(lod_rows)
+                    # Highlight high replacement rates
+                    st.dataframe(lod_df, use_container_width=True, hide_index=True)
         
         with st.spinner("Computing statistics..."):
             compute_all_statistics(processed, settings)
