@@ -398,7 +398,8 @@ class BileAcidVisualizer:
         ncols: int = 3,
         figsize: Optional[Tuple[float, float]] = None,
         plot_type: str = "box",
-        sharey: bool = False
+        sharey: bool = False,
+        ylabel: str = 'Concentration'
     ) -> plt.Figure:
         """Create multi-panel figure comparing groups across multiple variables."""
         # Filter out NaN groups
@@ -444,7 +445,7 @@ class BileAcidVisualizer:
             axes[i].set_title(col, fontsize=10)
             axes[i].set_xlabel('')
             if i % ncols == 0:
-                axes[i].set_ylabel('Concentration')
+                axes[i].set_ylabel(ylabel)
             else:
                 axes[i].set_ylabel('')
             axes[i].tick_params(axis='x', rotation=45)
@@ -467,7 +468,8 @@ class BileAcidVisualizer:
         sharey: bool = False,
         max_sig_bars: int = 3,
         log_scale: bool = False,
-        show_points: bool = True
+        show_points: bool = True,
+        ylabel: str = 'Concentration'
     ) -> plt.Figure:
         """
         Create multi-panel figure with significance annotations.
@@ -571,11 +573,10 @@ class BileAcidVisualizer:
                 ax.set_title(col, fontsize=10)
             
             ax.set_xlabel('')
-            ax.set_ylabel(ylabel)
-            if i % ncols == 0:
-                ax.set_ylabel('Concentration')
+            if log_scale:
+                ax.set_ylabel(f'log₁₀({ylabel})')
             else:
-                ax.set_ylabel('')
+                ax.set_ylabel(ylabel)
             ax.tick_params(axis='x', rotation=45)
         
         for i in range(n_plots, len(axes)):

@@ -1085,13 +1085,34 @@ def main():
     else:
         # Show expected input format when no data is loaded
         st.markdown("---")
-        st.markdown("### 📋 Expected Input Format")
+        st.markdown("## 📋 Expected Input Format")
         
+        st.markdown("### LC-MS sheet")
+        st.markdown("""
+        - **Rows:** First few are Std curves, followed by samples
+        - **Columns:** "Data Filename" (Std curve and sample names), followed by sphingolipid species
+        """)
+
+
+        st.markdown("**Example:**")
+        
+        # Create example dataframe
+        example_lcms_df = pd.DataFrame({
+            'Data Filename': ['Std 1 ngmL', 'Std 3  ngmL', 'Std 10 ngmL'],
+            'C16 Cer': [1.3, 3.0, 9.9],
+            'C24-0 Cer': [1.1, 2.9, 10.1],
+            'C16-SM': ['----', 3.1, 10.0],
+            'S-d18-1': ['----', '----', 10.2],
+            '...': ['...', '...', '...']
+        })
+        st.dataframe(example_lcms_df, hide_index=True, use_container_width=False)
+
+        st.markdown("### Sample sheet")
         st.markdown("""
         - **Rows:** Samples
-        - **Columns:** Bile acid species (matching panel names)
+        - **Columns:** Sphingolipid species (matching panel names)
         - **First column(s):** Sample ID, Group/Type
-        - **Values:** Concentrations (typically nmol/L)
+        - **Values:** Concentrations (typically ng/mL)
         - **Below LOD:** Can be "-----", "LOD", "BLQ", "ND", etc.
         """)
         
@@ -1099,12 +1120,12 @@ def main():
         
         # Create example dataframe
         example_df = pd.DataFrame({
-            'Type': ['HD-1', 'HD-2', 'AC-1'],
-            'Sample_ID': ['81-0210', '81-0211', '60-677'],
-            'TCA': [37.62, 66.66, 45.2],
-            'GCA': [194.1, 287.58, '-----'],
-            'TCDCA': [231.9, 158.46, 189.3],
-            'GCDCA': [3220.44, 1534.02, 2890.1],
+            'Type': ['Aged-1', 'Aged-2', 'Young-1'],
+            'Sample_ID': ['S001', 'S002', 'S003'],
+            'C16 Cer': [125.4, 142.8, 98.6],
+            'C24-0 Cer': [312.5, 287.9, '-----'],
+            'C16-SM': [1520.3, 1380.7, 1245.2],
+            'S-d18-1': [15.2, 18.4, 12.8],
             '...': ['...', '...', '...']
         })
         st.dataframe(example_df, hide_index=True, use_container_width=False)
