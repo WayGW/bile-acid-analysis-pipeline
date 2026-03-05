@@ -44,7 +44,9 @@ def init_session_state():
         'report_generator': None,
         'stats_computed': False,
         'last_file': None,
-        'last_settings': None  # Track settings that affect data/stats
+        'last_settings': None,  # Track settings that affect data/stats
+        'zip_data': None,  # Cached ZIP bytes for download
+        'zip_figure_count': 0  # Number of figures in cached ZIP
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -67,6 +69,8 @@ def check_settings_changed(settings):
         # Settings changed - need to reprocess data and recompute stats
         st.session_state.stats_computed = False
         st.session_state.figures = {}
+        st.session_state.zip_data = None
+        st.session_state.zip_figure_count = 0
         st.session_state.last_settings = current
         return True
     return False
@@ -968,20 +972,20 @@ def render_export_tab(processed, settings):
                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                               key="download_excel_report")
         
-        # Generate all figures and ZIP
-        with st.spinner("Generating all figures for export..."):
-            # Generate comprehensive figure set for all dropdown options
-            all_figures = generate_all_export_figures(processed, results, settings)
-            # Merge with any existing figures (e.g., from viewing tabs)
-            combined_figures = {**st.session_state.figures, **all_figures}
-            zip_bytes = create_results_zip(processed, results, combined_figures, report_gen, settings)
-        
-        st.download_button("📥 Complete Package (ZIP)", zip_bytes, 
-                          f"bile_acid_analysis_{datetime.now():%Y%m%d_%H%M}.zip", 
-                          "application/zip",
-                          key="download_zip")
-        
-        st.caption(f"📊 Package includes {len(combined_figures)} figures covering all analysis options")
+        # Generate ZIP on button click, then show download button
+        if st.button("📦 Generate Complete Package (ZIP)", key="generate_zip"):
+            with st.spinner("Generating all figures for export..."):
+                all_figures = generate_all_export_figures(processed, results, settings)
+                combined_figures = {**st.session_state.figures, **all_figures}
+                st.session_state.zip_data = create_results_zip(processed, results, combined_figures, report_gen, settings)
+                st.session_state.zip_figure_count = len(combined_figures)
+
+        if st.session_state.zip_data is not None:
+            st.download_button("📥 Download Complete Package (ZIP)", st.session_state.zip_data,
+                              f"bile_acid_analysis_{datetime.now():%Y%m%d_%H%M}.zip",
+                              "application/zip",
+                              key="download_zip")
+            st.caption(f"📊 Package includes {st.session_state.zip_figure_count} figures covering all analysis options")
     
     st.markdown("---")
     st.markdown("#### Summary Figure")
@@ -1012,6 +1016,8 @@ def main():
         if file_changed:
             st.session_state.stats_computed = False
             st.session_state.figures = {}
+            st.session_state.zip_data = None
+            st.session_state.zip_figure_count = 0
             st.session_state.last_file = uploaded.name
             st.session_state.last_settings = None  # Reset settings tracking for new file
         
