@@ -444,10 +444,11 @@ def render_concentrations_tab(processed, settings):
     data = data[data[group_col].astype(str).str.lower() != 'nan']
     available_bas = processed.structure.bile_acid_cols
     
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns([1, 2], vertical_alignment="bottom")
     with col1:
-        quick = st.selectbox("Quick select", ["Top 10", "Significant", "Primary", "Secondary", "Custom"])
-    
+        quick = st.segmented_control("Quick select", ["Top 10", "Significant", "Primary", "Secondary", "Custom"],
+                                      default="Top 10")
+
     if quick == "Top 10":
         selected = processed.concentrations.mean().nlargest(10).index.tolist()
     elif quick == "Significant":
@@ -561,12 +562,12 @@ def render_percentages_tab(processed, settings):
     pct_cols = [c for c in percentages.columns if c.endswith('_pct')]
     ba_names = [c.replace('_pct', '') for c in pct_cols]
     
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns([1, 2], vertical_alignment="bottom")
     with col1:
-        quick = st.selectbox("Quick select", 
-                            ["Top 10 by mean %", "Significant", "Primary", "Secondary", 
-                             "Glycine conjugated", "Taurine conjugated", "Custom"],
-                            key="pct_quick")
+        quick = st.pills("Quick select",
+                         ["Top 10 by mean %", "Significant", "Primary", "Secondary",
+                          "Glycine conjugated", "Taurine conjugated", "Custom"],
+                         default="Top 10 by mean %", key="pct_quick")
     
     if quick == "Top 10 by mean %":
         top_pcts = percentages[pct_cols].mean().nlargest(10).index.tolist()
@@ -771,11 +772,11 @@ def render_ratios_tab(processed, settings):
         return
     
     # Quick select options
-    col1, col2 = st.columns([1, 2])
+    col1, col2 = st.columns([1, 2], vertical_alignment="bottom")
     with col1:
-        quick = st.selectbox("Quick select", 
-                            ["All ratios", "Significant only", "Key ratios", "Custom"],
-                            key="ratio_quick")
+        quick = st.segmented_control("Quick select",
+                                      ["All ratios", "Significant only", "Key ratios", "Custom"],
+                                      default="All ratios", key="ratio_quick")
     
     # Define key clinical ratios
     key_ratios = ['primary_to_secondary', 'glycine_to_taurine', 'conjugated_to_unconjugated',
@@ -974,11 +975,14 @@ def render_export_tab(processed, settings):
         
         # Generate ZIP on button click, then show download button
         if st.button("📦 Generate Complete Package (ZIP)", key="generate_zip"):
-            with st.spinner("Generating all figures for export..."):
+            with st.status("Generating export package...", expanded=True) as status:
+                st.write("Rendering all figure variations...")
                 all_figures = generate_all_export_figures(processed, results, settings)
                 combined_figures = {**st.session_state.figures, **all_figures}
+                st.write("Packaging ZIP archive...")
                 st.session_state.zip_data = create_results_zip(processed, results, combined_figures, report_gen, settings)
                 st.session_state.zip_figure_count = len(combined_figures)
+                status.update(label="Package ready!", state="complete", expanded=False)
 
         if st.session_state.zip_data is not None:
             st.download_button("📥 Download Complete Package (ZIP)", st.session_state.zip_data,
@@ -996,9 +1000,9 @@ def render_export_tab(processed, settings):
             ['Total_All_BAs', 'Total_Primary', 'Total_Secondary', 'Total_Conjugated'], 2, settings['plot_type'])
         st.pyplot(fig)
         store_figure(fig, 'summary')
-        c1, c2 = st.columns(2)
-        c1.download_button("📥 PNG", fig_to_bytes(fig), "summary.png", "image/png", key="download_summary_png")
-        c2.download_button("📥 PDF", fig_to_bytes(fig, 'pdf'), "summary.pdf", "application/pdf", key="download_summary_pdf")
+        with st.container(horizontal=True):
+            st.download_button("📥 PNG", fig_to_bytes(fig), "summary.png", "image/png", key="download_summary_png")
+            st.download_button("📥 PDF", fig_to_bytes(fig, 'pdf'), "summary.pdf", "application/pdf", key="download_summary_pdf")
         plt.close(fig)
 
 
@@ -1023,23 +1027,25 @@ def main():
         
         # Check if settings changed (LOD handling, alpha, etc.)
         settings_changed = check_settings_changed(settings)
+        if settings_changed:
+            st.toast("Settings changed — reprocessing data...")
         
         # Reprocess data if file or settings changed
         if file_changed or settings_changed or st.session_state.processed_data is None:
-            with st.spinner("Processing data..." + (" (settings changed)" if settings_changed else "")):
+            with st.status("Processing data...", expanded=True) as status:
+                st.write("Reading file...")
                 with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded.name).suffix) as tmp:
                     tmp.write(uploaded.getvalue())
                     tmp_path = tmp.name
-                
+
                 try:
+                    st.write("Detecting structure & applying LOD handling...")
                     processor = BileAcidDataProcessor(lod_handling=settings['lod_handling'])
                     processed = processor.load_and_process(tmp_path)
                     st.session_state.processed_data = processed
-                    if settings_changed:
-                        st.success("✅ Data reprocessed with new settings!")
-                    else:
-                        st.success("✅ Data loaded!")
+                    status.update(label="Data processed!", state="complete", expanded=False)
                 except Exception as e:
+                    status.update(label="Processing failed", state="error")
                     st.error(f"Error: {e}")
                     return
     
@@ -1077,8 +1083,9 @@ def main():
                     # Highlight high replacement rates
                     st.dataframe(lod_df, width="stretch", hide_index=True)
         
-        with st.spinner("Computing statistics..."):
+        with st.status("Computing statistics...", expanded=False) as status:
             compute_all_statistics(processed, settings)
+            status.update(label="Statistics ready", state="complete")
         
         tabs = st.tabs(["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios", "📊 Statistics", "💾 Export"])
         with tabs[0]: render_concentrations_tab(processed, settings)
