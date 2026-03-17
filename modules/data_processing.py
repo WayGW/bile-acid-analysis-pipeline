@@ -871,7 +871,7 @@ def validate_data_quality(processed: ProcessedData) -> Dict[str, Any]:
     }
     
     # Group info
-    if processed.structure.group_col:
+    if processed.structure.group_col and processed.structure.group_col in processed.sample_data.columns:
         groups = processed.sample_data[processed.structure.group_col].unique()
         report['groups'] = list(groups)
         report['n_groups'] = len(groups)

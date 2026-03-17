@@ -742,11 +742,11 @@ def render_percentages_tab(processed, settings):
                 values='Mean %',
                 aggfunc='first'
             )
-            st.dataframe(pivot_df, use_container_width=True)
+            st.dataframe(pivot_df, width="stretch")
     
     # Raw data view
     with st.expander("📋 View percentage data"):
-        st.dataframe(plot_df, use_container_width=True)
+        st.dataframe(plot_df, width="stretch")
 
 
 def render_ratios_tab(processed, settings):
@@ -870,12 +870,12 @@ def render_ratios_tab(processed, settings):
         if summary_data:
             summary_df = pd.DataFrame(summary_data)
             pivot_df = summary_df.pivot_table(index='Ratio', columns='Group', values='Mean', aggfunc='first')
-            st.dataframe(pivot_df, use_container_width=True)
+            st.dataframe(pivot_df, width="stretch")
     
     # Raw data
     with st.expander("📋 View ratio data"):
         display_cols = [group_col] + selected_ratios
-        st.dataframe(combined[display_cols], use_container_width=True)
+        st.dataframe(combined[display_cols], width="stretch")
 
 
 def render_statistics_tab(processed, settings):
@@ -1075,7 +1075,7 @@ def main():
                 if lod_rows:
                     lod_df = pd.DataFrame(lod_rows)
                     # Highlight high replacement rates
-                    st.dataframe(lod_df, use_container_width=True, hide_index=True)
+                    st.dataframe(lod_df, width="stretch", hide_index=True)
         
         with st.spinner("Computing statistics..."):
             compute_all_statistics(processed, settings)
@@ -1111,7 +1111,7 @@ def main():
             'S-d18-1': ['----', '----', 10.2],
             '...': ['...', '...', '...']
         })
-        st.dataframe(example_lcms_df, hide_index=True, use_container_width=False)
+        st.dataframe(example_lcms_df.astype(str), hide_index=True, width="content")
 
         st.markdown("### Sample sheet")
         st.markdown("""
@@ -1134,7 +1134,7 @@ def main():
             'S-d18-1': [15.2, 18.4, 12.8],
             '...': ['...', '...', '...']
         })
-        st.dataframe(example_df, hide_index=True, use_container_width=False)
+        st.dataframe(example_df.astype(str), hide_index=True, width="content")
         
         st.info("💡 The pipeline auto-detects bile acid columns and group assignments from your data.")
 

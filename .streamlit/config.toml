@@ -1,4 +1,2 @@
-cat > .streamlit/config.toml << 'EOF'
 [server]
 maxUploadSize = 50
-EOF
