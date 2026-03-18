@@ -277,7 +277,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_multi_panel_groups_with_stats(
                         data, selected, group_col, stats_dict, ncols=3,
                         plot_type=settings['plot_type'], log_scale=log_scale,
-                        show_points=settings['show_points'])
+                        show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
                     figures[f'concentrations{suffix}'] = fig
                 except Exception:
                     pass
@@ -297,7 +297,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_multi_panel_groups_with_stats(
                         totals_combined, available_totals, group_col, totals_stats, ncols=3,
                         plot_type=settings['plot_type'], log_scale=log_scale,
-                        show_points=settings['show_points'])
+                        show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
                     figures[f'totals{suffix}'] = fig
                 except Exception:
                     pass
@@ -320,7 +320,7 @@ def generate_all_export_figures(processed, results, settings):
                 fig = viz.plot_multi_panel_groups_with_stats(
                     pct_display, display_cols, group_col, pct_stats, ncols=3,
                     plot_type=settings['plot_type'], log_scale=False,
-                    show_points=settings['show_points'])
+                    show_points=settings['show_points'], ylabel='% of Total BA')
                 figures['percentages_top10'] = fig
             except Exception:
                 pass
@@ -337,7 +337,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_multi_panel_groups_with_stats(
                         ratios_combined, ratio_cols[:9], group_col, ratios_stats, ncols=3,
                         plot_type=settings['plot_type'], log_scale=log_scale,
-                        show_points=settings['show_points'])
+                        show_points=settings['show_points'], ylabel='Ratio')
                     figures[f'ratios{suffix}'] = fig
                 except Exception:
                     pass
@@ -626,14 +626,14 @@ def render_concentrations_tab(processed, settings):
 
             fig = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict,
                                                          ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
-                                                         show_points=settings['show_points'])
+                                                         show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
             st.pyplot(fig)
             store_figure(fig, f'concentrations{"_log" if log_scale else ""}')
             plt.close(fig)
 
             fig_other = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict,
                                                                ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
-                                                               show_points=settings['show_points'])
+                                                               show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
             store_figure(fig_other, f'concentrations{"_log" if not log_scale else ""}')
             plt.close(fig_other)
 
@@ -692,14 +692,14 @@ def render_totals_tab(processed, settings):
 
         fig = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
                                                      ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
-                                                     show_points=settings['show_points'])
+                                                     show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
         st.pyplot(fig)
         store_figure(fig, f'totals{"_log" if log_scale else ""}')
         plt.close(fig)
 
         fig_other = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
                                                            ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
-                                                           show_points=settings['show_points'])
+                                                           show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
         store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
         plt.close(fig_other)
 
@@ -852,12 +852,8 @@ def render_percentages_tab(processed, settings):
         fig = viz.plot_multi_panel_groups_with_stats(
             plot_df_display, display_names, group_col, stats_dict,
             ncols=3, plot_type=settings['plot_type'], log_scale=False,
-            show_points=settings['show_points']
+            show_points=settings['show_points'], ylabel='% of Total BA'
         )
-
-        for ax in fig.get_axes():
-            if ax.get_visible():
-                ax.set_ylabel('% of Total BA')
 
         st.pyplot(fig)
         store_figure(fig, 'percentages')
@@ -1128,7 +1124,7 @@ def render_ratios_tab(processed, settings):
         fig = viz.plot_multi_panel_groups_with_stats(
             combined, selected_ratios, group_col, stats_dict,
             ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
-            show_points=settings['show_points']
+            show_points=settings['show_points'], ylabel='Ratio'
         )
         st.pyplot(fig)
         store_figure(fig, f'ratios{"_log" if log_scale else ""}')
@@ -1138,7 +1134,7 @@ def render_ratios_tab(processed, settings):
         fig_other = viz.plot_multi_panel_groups_with_stats(
             combined, selected_ratios, group_col, stats_dict,
             ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
-            show_points=settings['show_points']
+            show_points=settings['show_points'], ylabel='Ratio'
         )
         store_figure(fig_other, f'ratios{"_log" if not log_scale else ""}')
         plt.close(fig_other)
