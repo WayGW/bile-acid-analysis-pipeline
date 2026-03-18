@@ -24,12 +24,12 @@ from config.bile_acid_species import (
     get_primary, get_secondary, get_conjugated, get_unconjugated
 )
 from modules.data_processing import BileAcidDataProcessor, ProcessedData, validate_data_quality
-from modules.statistical_tests import StatisticalAnalyzer, format_analysis_report
+from modules.statistical_tests import StatisticalAnalyzer, format_analysis_report, format_twoway_apa
 from modules.visualization import BileAcidVisualizer, create_summary_figure
 from modules.report_generation import (
-    ExcelReportGenerator, SignificancePlotter, 
+    ExcelReportGenerator, SignificancePlotter,
     ComprehensiveAnalysisResults, format_apa_statistics,
-    get_significant_differences_summary
+    get_significant_differences_summary, get_twoway_differences_summary
 )
 
 st.set_page_config(page_title="Bile Acid Analysis Pipeline", page_icon="🧬", layout="wide")
@@ -97,7 +97,11 @@ def compute_all_statistics(processed, settings):
     group_col = processed.structure.group_col
     if not group_col:
         return None
-    
+
+    # Detect factor info for two-way ANOVA
+    factors = getattr(processed.structure, 'factors', {})
+    n_factors = getattr(processed.structure, 'n_factors', 0)
+
     report_gen = ExcelReportGenerator(
         data=processed.sample_data,
         group_col=group_col,
@@ -105,7 +109,9 @@ def compute_all_statistics(processed, settings):
         totals=processed.totals,
         ratios=processed.ratios,
         percentages=processed.percentages,
-        alpha=settings['alpha']
+        alpha=settings['alpha'],
+        factors=factors,
+        n_factors=n_factors,
     )
     
     results = report_gen.run_all_statistics()
@@ -144,95 +150,198 @@ def generate_all_export_figures(processed, results, settings):
     data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
     data = data[data[group_col].astype(str).str.lower() != 'nan']
     available_bas = processed.structure.bile_acid_cols
-    
-    # === CONCENTRATIONS TAB FIGURES ===
-    conc_selections = {
-        'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
-        'significant': [b for b in available_bas if b in results.individual_ba_results 
-                       and results.individual_ba_results[b].main_test.significant][:10],
-        'primary': [b for b in get_primary() if b in available_bas][:10],
-        'secondary': [b for b in get_secondary() if b in available_bas][:10],
-    }
-    
-    for sel_name, selected in conc_selections.items():
-        if not selected:
-            continue
-        stats_dict = {b: results.individual_ba_results.get(b) for b in selected if b in results.individual_ba_results}
-        
-        for log_scale in [False, True]:
-            suffix = f"_{sel_name}{'_log' if log_scale else ''}"
+
+    is_twoway = results.is_twoway
+
+    if is_twoway:
+        # =====================================================================
+        # TWO-WAY ANOVA EXPORT FIGURES
+        # =====================================================================
+        fa_col = results.factor_a_col
+        fb_col = results.factor_b_col
+        fa_name = results.factor_a_name
+        fb_name = results.factor_b_name
+
+        # --- Concentrations ---
+        conc_selections = {
+            'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
+            'significant': [b for b in available_bas if b in results.twoway_individual_ba
+                           and (results.twoway_individual_ba[b].twoway_result.factor_a_pvalue < settings['alpha']
+                                or results.twoway_individual_ba[b].twoway_result.factor_b_pvalue < settings['alpha']
+                                or results.twoway_individual_ba[b].twoway_result.interaction_pvalue < settings['alpha'])][:10],
+            'primary': [b for b in get_primary() if b in available_bas][:10],
+            'secondary': [b for b in get_secondary() if b in available_bas][:10],
+        }
+
+        for sel_name, selected in conc_selections.items():
+            if not selected:
+                continue
+            tw_stats = {b: results.twoway_individual_ba.get(b) for b in selected
+                       if b in results.twoway_individual_ba}
+            suffix = f"_{sel_name}"
             try:
-                fig = viz.plot_multi_panel_groups_with_stats(
-                    data, selected, group_col, stats_dict, ncols=3,
-                    plot_type=settings['plot_type'], log_scale=log_scale,
-                    show_points=settings['show_points'])
+                fig = viz.plot_twoway_multi_panel(
+                    data=data, value_cols=selected,
+                    factor_a_col=fa_col, factor_b_col=fb_col,
+                    twoway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name,
+                    ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                    plot_type=settings['plot_type'])
                 figures[f'concentrations{suffix}'] = fig
             except Exception:
                 pass
-    
-    # === TOTALS TAB FIGURES ===
-    totals_combined = pd.concat([data[[group_col]], processed.totals.loc[data.index]], axis=1)
-    
-    # Key totals
-    key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated', 
-                  'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated']
-    available_totals = [t for t in key_totals if t in totals_combined.columns]
-    
-    if available_totals:
-        totals_stats = {t: results.totals_results.get(t) for t in available_totals if t in results.totals_results}
-        for log_scale in [False, True]:
-            suffix = '_log' if log_scale else ''
             try:
-                fig = viz.plot_multi_panel_groups_with_stats(
-                    totals_combined, available_totals, group_col, totals_stats, ncols=3,
-                    plot_type=settings['plot_type'], log_scale=log_scale,
-                    show_points=settings['show_points'])
-                figures[f'totals{suffix}'] = fig
+                fig_int = viz.plot_twoway_interaction_multi_panel(
+                    data=data, value_cols=selected,
+                    factor_a_col=fa_col, factor_b_col=fb_col,
+                    twoway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name,
+                    ylabel='Concentration (nmol/L)')
+                figures[f'concentrations{suffix}_interaction'] = fig_int
             except Exception:
                 pass
-    
-    # === PERCENTAGES TAB FIGURES ===
-    pct_cols = [col for col in processed.percentages.columns if col.endswith('_pct')]
-    if pct_cols:
-        # Top 10 by mean percentage
-        top_pct = processed.percentages[pct_cols].mean().nlargest(10).index.tolist()
-        pct_combined = pd.concat([data[[group_col]], processed.percentages.loc[data.index, top_pct]], axis=1)
-        
-        # Rename columns for display (remove _pct suffix)
-        display_cols = [col.replace('_pct', '') for col in top_pct]
-        pct_display = pct_combined.rename(columns={old: new for old, new in zip(top_pct, display_cols)})
-        
-        pct_stats = {}
-        for pct_col, disp_col in zip(top_pct, display_cols):
-            if pct_col in results.percentages_results:
-                pct_stats[disp_col] = results.percentages_results[pct_col]
-        
-        try:
-            fig = viz.plot_multi_panel_groups_with_stats(
-                pct_display, display_cols, group_col, pct_stats, ncols=3,
-                plot_type=settings['plot_type'], log_scale=False,
-                show_points=settings['show_points'])
-            figures['percentages_top10'] = fig
-        except Exception:
-            pass
-    
-    # === RATIOS TAB FIGURES ===
-    ratio_cols = [col for col in processed.ratios.columns if not processed.ratios[col].isna().all()]
-    if ratio_cols:
-        ratios_combined = pd.concat([data[[group_col]], processed.ratios.loc[data.index, ratio_cols]], axis=1)
-        ratios_stats = {r: results.ratios_results.get(r) for r in ratio_cols if r in results.ratios_results}
-        
-        for log_scale in [False, True]:
-            suffix = '_log' if log_scale else ''
+
+        # --- Totals ---
+        key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated',
+                      'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated']
+        available_totals = [t for t in key_totals if t in processed.totals.columns]
+
+        if available_totals:
+            totals_data = pd.concat([data[[fa_col, fb_col]].reset_index(drop=True),
+                                     processed.totals[available_totals].loc[data.index].reset_index(drop=True)], axis=1)
+            tw_stats = {t: results.twoway_totals.get(t) for t in available_totals
+                       if t in results.twoway_totals}
             try:
-                fig = viz.plot_multi_panel_groups_with_stats(
-                    ratios_combined, ratio_cols[:9], group_col, ratios_stats, ncols=3,
-                    plot_type=settings['plot_type'], log_scale=log_scale,
-                    show_points=settings['show_points'])
-                figures[f'ratios{suffix}'] = fig
+                fig = viz.plot_twoway_multi_panel(
+                    data=totals_data, value_cols=available_totals,
+                    factor_a_col=fa_col, factor_b_col=fb_col,
+                    twoway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name,
+                    ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                    plot_type=settings['plot_type'])
+                figures['totals'] = fig
             except Exception:
                 pass
-    
+            try:
+                fig_int = viz.plot_twoway_interaction_multi_panel(
+                    data=totals_data, value_cols=available_totals,
+                    factor_a_col=fa_col, factor_b_col=fb_col,
+                    twoway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name,
+                    ylabel='Concentration (nmol/L)')
+                figures['totals_interaction'] = fig_int
+            except Exception:
+                pass
+
+        # --- Ratios ---
+        ratio_cols = [col for col in processed.ratios.columns if not processed.ratios[col].isna().all()]
+        if ratio_cols:
+            ratio_data = pd.concat([data[[fa_col, fb_col]].reset_index(drop=True),
+                                    processed.ratios[ratio_cols].loc[data.index].reset_index(drop=True)], axis=1)
+            tw_stats = {r: results.twoway_ratios.get(r) for r in ratio_cols[:9]
+                       if r in results.twoway_ratios}
+            try:
+                fig = viz.plot_twoway_multi_panel(
+                    data=ratio_data, value_cols=ratio_cols[:9],
+                    factor_a_col=fa_col, factor_b_col=fb_col,
+                    twoway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name,
+                    ylabel='Ratio', show_points=settings['show_points'],
+                    plot_type=settings['plot_type'])
+                figures['ratios'] = fig
+            except Exception:
+                pass
+
+    else:
+        # =====================================================================
+        # ONE-WAY EXPORT FIGURES (unchanged)
+        # =====================================================================
+
+        # === CONCENTRATIONS TAB FIGURES ===
+        conc_selections = {
+            'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
+            'significant': [b for b in available_bas if b in results.individual_ba_results
+                           and results.individual_ba_results[b].main_test.significant][:10],
+            'primary': [b for b in get_primary() if b in available_bas][:10],
+            'secondary': [b for b in get_secondary() if b in available_bas][:10],
+        }
+
+        for sel_name, selected in conc_selections.items():
+            if not selected:
+                continue
+            stats_dict = {b: results.individual_ba_results.get(b) for b in selected if b in results.individual_ba_results}
+
+            for log_scale in [False, True]:
+                suffix = f"_{sel_name}{'_log' if log_scale else ''}"
+                try:
+                    fig = viz.plot_multi_panel_groups_with_stats(
+                        data, selected, group_col, stats_dict, ncols=3,
+                        plot_type=settings['plot_type'], log_scale=log_scale,
+                        show_points=settings['show_points'])
+                    figures[f'concentrations{suffix}'] = fig
+                except Exception:
+                    pass
+
+        # === TOTALS TAB FIGURES ===
+        totals_combined = pd.concat([data[[group_col]], processed.totals.loc[data.index]], axis=1)
+
+        key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated',
+                      'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated']
+        available_totals = [t for t in key_totals if t in totals_combined.columns]
+
+        if available_totals:
+            totals_stats = {t: results.totals_results.get(t) for t in available_totals if t in results.totals_results}
+            for log_scale in [False, True]:
+                suffix = '_log' if log_scale else ''
+                try:
+                    fig = viz.plot_multi_panel_groups_with_stats(
+                        totals_combined, available_totals, group_col, totals_stats, ncols=3,
+                        plot_type=settings['plot_type'], log_scale=log_scale,
+                        show_points=settings['show_points'])
+                    figures[f'totals{suffix}'] = fig
+                except Exception:
+                    pass
+
+        # === PERCENTAGES TAB FIGURES ===
+        pct_cols = [col for col in processed.percentages.columns if col.endswith('_pct')]
+        if pct_cols:
+            top_pct = processed.percentages[pct_cols].mean().nlargest(10).index.tolist()
+            pct_combined = pd.concat([data[[group_col]], processed.percentages.loc[data.index, top_pct]], axis=1)
+
+            display_cols = [col.replace('_pct', '') for col in top_pct]
+            pct_display = pct_combined.rename(columns={old: new for old, new in zip(top_pct, display_cols)})
+
+            pct_stats = {}
+            for pct_col, disp_col in zip(top_pct, display_cols):
+                if pct_col in results.percentages_results:
+                    pct_stats[disp_col] = results.percentages_results[pct_col]
+
+            try:
+                fig = viz.plot_multi_panel_groups_with_stats(
+                    pct_display, display_cols, group_col, pct_stats, ncols=3,
+                    plot_type=settings['plot_type'], log_scale=False,
+                    show_points=settings['show_points'])
+                figures['percentages_top10'] = fig
+            except Exception:
+                pass
+
+        # === RATIOS TAB FIGURES ===
+        ratio_cols = [col for col in processed.ratios.columns if not processed.ratios[col].isna().all()]
+        if ratio_cols:
+            ratios_combined = pd.concat([data[[group_col]], processed.ratios.loc[data.index, ratio_cols]], axis=1)
+            ratios_stats = {r: results.ratios_results.get(r) for r in ratio_cols if r in results.ratios_results}
+
+            for log_scale in [False, True]:
+                suffix = '_log' if log_scale else ''
+                try:
+                    fig = viz.plot_multi_panel_groups_with_stats(
+                        ratios_combined, ratio_cols[:9], group_col, ratios_stats, ncols=3,
+                        plot_type=settings['plot_type'], log_scale=log_scale,
+                        show_points=settings['show_points'])
+                    figures[f'ratios{suffix}'] = fig
+                except Exception:
+                    pass
+
     return figures
 
 
@@ -431,27 +540,34 @@ def render_sidebar():
 def render_concentrations_tab(processed, settings):
     """Render concentrations tab."""
     st.markdown("### Individual Bile Acid Concentrations")
-    
+
     viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
     group_col = processed.structure.group_col
     results = st.session_state.analysis_results
-    
+
     if not group_col:
         st.warning("No group column detected.")
         return
-    
+
     data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
     data = data[data[group_col].astype(str).str.lower() != 'nan']
     available_bas = processed.structure.bile_acid_cols
-    
+    is_twoway = results is not None and results.is_twoway
+
     quick = st.segmented_control("Quick select", ["Top 10", "Significant", "Primary", "Secondary", "Custom"],
                                   default="Top 10")
 
     if quick == "Top 10":
         selected = processed.concentrations.mean().nlargest(10).index.tolist()
     elif quick == "Significant":
-        selected = [b for b in available_bas if b in results.individual_ba_results
-                   and results.individual_ba_results[b].main_test.significant][:10]
+        if is_twoway:
+            selected = [b for b in available_bas if b in results.twoway_individual_ba
+                       and (results.twoway_individual_ba[b].twoway_result.factor_a_pvalue < settings['alpha']
+                            or results.twoway_individual_ba[b].twoway_result.factor_b_pvalue < settings['alpha']
+                            or results.twoway_individual_ba[b].twoway_result.interaction_pvalue < settings['alpha'])][:10]
+        else:
+            selected = [b for b in available_bas if b in results.individual_ba_results
+                       and results.individual_ba_results[b].main_test.significant][:10]
         if not selected:
             st.info("No significant individual BAs found.")
             selected = processed.concentrations.mean().nlargest(5).index.tolist()
@@ -461,81 +577,144 @@ def render_concentrations_tab(processed, settings):
         selected = [b for b in get_secondary() if b in available_bas][:10]
     else:
         selected = st.multiselect("Select BAs", available_bas, available_bas[:5])
-    
-    log_scale = st.checkbox("Log₁₀ scale", key="conc_log")
-    
+
+    log_scale = st.checkbox("Log10 scale", key="conc_log")
+
     if selected:
-        stats_dict = {b: results.individual_ba_results.get(b) for b in selected if b in results.individual_ba_results}
-        
-        # Display version
-        fig = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict, 
-                                                     ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
-                                                     show_points=settings['show_points'])
-        st.pyplot(fig)
-        store_figure(fig, f'concentrations{"_log" if log_scale else ""}')
-        plt.close(fig)
-        
-        # Generate other version for export
-        fig_other = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict,
-                                                           ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
-                                                           show_points=settings['show_points'])
-        store_figure(fig_other, f'concentrations{"_log" if not log_scale else ""}')
-        plt.close(fig_other)
-        
-        with st.expander("📊 Statistical Summary"):
-            st.dataframe(get_significant_differences_summary(stats_dict), hide_index=True)
+        if is_twoway:
+            # === TWO-WAY ANOVA PLOTS ===
+            fa_col = results.factor_a_col
+            fb_col = results.factor_b_col
+            fa_name = results.factor_a_name
+            fb_name = results.factor_b_name
+
+            st.markdown(f"**Two-way ANOVA**: {fa_name} x {fb_name}")
+
+            tw_stats = {b: results.twoway_individual_ba.get(b) for b in selected
+                       if b in results.twoway_individual_ba}
+
+            fig = viz.plot_twoway_multi_panel(
+                data=data, value_cols=selected,
+                factor_a_col=fa_col, factor_b_col=fb_col,
+                twoway_results=tw_stats, ncols=3,
+                factor_a_name=fa_name, factor_b_name=fb_name,
+                ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                plot_type=settings['plot_type']
+            )
+            st.pyplot(fig)
+            store_figure(fig, 'concentrations_twoway')
+            plt.close(fig)
+
+            with st.expander("Interaction Plots"):
+                fig_int = viz.plot_twoway_interaction_multi_panel(
+                    data=data, value_cols=selected,
+                    factor_a_col=fa_col, factor_b_col=fb_col,
+                    twoway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name,
+                    ylabel='Concentration (nmol/L)'
+                )
+                st.pyplot(fig_int)
+                store_figure(fig_int, 'concentrations_interaction')
+                plt.close(fig_int)
+
+            with st.expander("Two-Way ANOVA Summary"):
+                if tw_stats:
+                    st.dataframe(get_twoway_differences_summary(tw_stats), hide_index=True)
+        else:
+            # === ONE-WAY ANOVA PLOTS ===
+            stats_dict = {b: results.individual_ba_results.get(b) for b in selected if b in results.individual_ba_results}
+
+            fig = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict,
+                                                         ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
+                                                         show_points=settings['show_points'])
+            st.pyplot(fig)
+            store_figure(fig, f'concentrations{"_log" if log_scale else ""}')
+            plt.close(fig)
+
+            fig_other = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict,
+                                                               ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
+                                                               show_points=settings['show_points'])
+            store_figure(fig_other, f'concentrations{"_log" if not log_scale else ""}')
+            plt.close(fig_other)
+
+            with st.expander("Statistical Summary"):
+                st.dataframe(get_significant_differences_summary(stats_dict), hide_index=True)
 
 
 def render_totals_tab(processed, settings):
     """Render totals tab."""
     st.markdown("### Aggregate Totals")
-    
+
     viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
     group_col = processed.structure.group_col
     results = st.session_state.analysis_results
-    
+
     if not group_col:
         return
-    
+
     data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
-    combined = pd.concat([data[[group_col]], processed.totals.loc[data.index]], axis=1)
-    
-    log_scale = st.checkbox("Log₁₀ scale", key="totals_log")
-    
-    # Key totals to show
-    key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated', 
+    data = data[data[group_col].astype(str).str.lower() != 'nan']
+    is_twoway = results is not None and results.is_twoway
+
+    log_scale = st.checkbox("Log10 scale", key="totals_log")
+
+    key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated',
                   'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated']
-    available = [t for t in key_totals if t in combined.columns]
-    
-    stats_dict = {t: results.totals_results.get(t) for t in available if t in results.totals_results}
-    
-    # Display version
-    fig = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
-                                                 ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
-                                                 show_points=settings['show_points'])
-    st.pyplot(fig)
-    store_figure(fig, f'totals{"_log" if log_scale else ""}')
-    plt.close(fig)
-    
-    # Generate other version for export
-    fig_other = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
-                                                       ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
-                                                       show_points=settings['show_points'])
-    store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
-    plt.close(fig_other)
-    
-    with st.expander("📊 Statistical Summary"):
-        rows = []
-        for t in available:
-            res = results.totals_results.get(t)
-            if res:
-                rows.append({
-                    'Total': t.replace('_', ' ').title(),
-                    'P-value': f"{res.main_test.pvalue:.4f}",
-                    'Significant': '✓' if res.main_test.significant else '',
-                    'APA': format_apa_statistics(res)
-                })
-        st.dataframe(pd.DataFrame(rows), hide_index=True)
+
+    if is_twoway:
+        fa_col = results.factor_a_col
+        fb_col = results.factor_b_col
+        combined = pd.concat([data[[fa_col, fb_col]], processed.totals.loc[data.index]], axis=1)
+        available = [t for t in key_totals if t in combined.columns]
+
+        tw_stats = {t: results.twoway_totals.get(t) for t in available if t in results.twoway_totals}
+
+        fig = viz.plot_twoway_multi_panel(
+            data=combined, value_cols=available,
+            factor_a_col=fa_col, factor_b_col=fb_col,
+            twoway_results=tw_stats, ncols=3,
+            factor_a_name=results.factor_a_name, factor_b_name=results.factor_b_name,
+            ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+            plot_type=settings['plot_type']
+        )
+        st.pyplot(fig)
+        store_figure(fig, 'totals_twoway')
+        plt.close(fig)
+
+        with st.expander("Two-Way ANOVA Summary"):
+            if tw_stats:
+                st.dataframe(get_twoway_differences_summary(tw_stats), hide_index=True)
+    else:
+        combined = pd.concat([data[[group_col]], processed.totals.loc[data.index]], axis=1)
+        available = [t for t in key_totals if t in combined.columns]
+
+        stats_dict = {t: results.totals_results.get(t) for t in available if t in results.totals_results}
+
+        fig = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
+                                                     ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
+                                                     show_points=settings['show_points'])
+        st.pyplot(fig)
+        store_figure(fig, f'totals{"_log" if log_scale else ""}')
+        plt.close(fig)
+
+        fig_other = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
+                                                           ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
+                                                           show_points=settings['show_points'])
+        store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
+        plt.close(fig_other)
+
+        with st.expander("Statistical Summary"):
+            rows = []
+            for t in available:
+                res = results.totals_results.get(t)
+                if res:
+                    rows.append({
+                        'Total': t.replace('_', ' ').title(),
+                        'P-value': f"{res.main_test.pvalue:.4f}",
+                        'Significant': '\u2713' if res.main_test.significant else '',
+                        'APA': format_apa_statistics(res)
+                    })
+            st.dataframe(pd.DataFrame(rows), hide_index=True)
 
 
 def render_percentages_tab(processed, settings):
@@ -592,61 +771,113 @@ def render_percentages_tab(processed, settings):
     if not selected_pct_cols:
         st.warning("No bile acids selected.")
         return
-    
+
+    is_twoway = results is not None and results.is_twoway
+
     # Show significant findings summary
-    sig_pcts = [c for c in selected_pct_cols if c in results.percentages_results 
-               and results.percentages_results[c].main_test.significant]
+    if is_twoway:
+        sig_pcts = [c for c in selected_pct_cols if c in results.twoway_percentages
+                   and (results.twoway_percentages[c].twoway_result.factor_a_pvalue < settings['alpha']
+                        or results.twoway_percentages[c].twoway_result.factor_b_pvalue < settings['alpha']
+                        or results.twoway_percentages[c].twoway_result.interaction_pvalue < settings['alpha'])]
+    else:
+        sig_pcts = [c for c in selected_pct_cols if c in results.percentages_results
+                   and results.percentages_results[c].main_test.significant]
     if sig_pcts:
         sig_names = [c.replace('_pct', '') for c in sig_pcts]
         st.success(f"**Significant differences:** {', '.join(sig_names)}")
-    
-    # Combine data for plotting
-    plot_df = pd.concat([data[[group_col]].reset_index(drop=True), 
-                         percentages[selected_pct_cols].reset_index(drop=True)], axis=1)
-    
+
     # Rename columns for cleaner display (remove _pct suffix)
     display_cols = {col: col.replace('_pct', '') for col in selected_pct_cols}
-    plot_df_display = plot_df.rename(columns=display_cols)
     display_names = list(display_cols.values())
-    
-    # Get stats results with display names
-    stats_dict = {}
-    for pct_col in selected_pct_cols:
-        display_name = pct_col.replace('_pct', '')
-        if pct_col in results.percentages_results:
-            stats_dict[display_name] = results.percentages_results[pct_col]
-    
+
     # =========================================================================
     # SECTION 1: Statistical comparison (box/violin plots)
     # =========================================================================
     st.markdown("#### Statistical Comparison by Group")
-    
-    fig = viz.plot_multi_panel_groups_with_stats(
-        plot_df_display, display_names, group_col, stats_dict,
-        ncols=3, plot_type=settings['plot_type'], log_scale=False,
-        show_points=settings['show_points']
-    )
-    
-    # Update y-axis labels to show percentage
-    for ax in fig.get_axes():
-        if ax.get_visible():
-            ax.set_ylabel('% of Total BA')
-    
-    st.pyplot(fig)
-    store_figure(fig, 'percentages')
-    plt.close(fig)
-    
+
+    if is_twoway:
+        fa_col = results.factor_a_col
+        fb_col = results.factor_b_col
+        fa_name = results.factor_a_name
+        fb_name = results.factor_b_name
+
+        st.markdown(f"**Two-way ANOVA**: {fa_name} x {fb_name}")
+
+        tw_stats = {c.replace('_pct', ''): results.twoway_percentages.get(c)
+                   for c in selected_pct_cols if c in results.twoway_percentages}
+
+        pct_plot_data = pd.concat([data[[fa_col, fb_col]].reset_index(drop=True),
+                                   percentages[selected_pct_cols].reset_index(drop=True)], axis=1)
+        pct_plot_data = pct_plot_data.rename(columns=display_cols)
+
+        try:
+            fig = viz.plot_twoway_multi_panel(
+                data=pct_plot_data, value_cols=display_names,
+                factor_a_col=fa_col, factor_b_col=fb_col,
+                twoway_results=tw_stats, ncols=3,
+                factor_a_name=fa_name, factor_b_name=fb_name,
+                ylabel='% of Total BA', show_points=settings['show_points'],
+                plot_type=settings['plot_type']
+            )
+            st.pyplot(fig)
+            store_figure(fig, 'percentages_twoway')
+            plt.close(fig)
+        except Exception as e:
+            st.warning(f"Could not generate two-way percentage plot: {e}")
+
+        with st.expander("Two-Way ANOVA Summary"):
+            tw_stats_orig = {c: results.twoway_percentages.get(c)
+                           for c in selected_pct_cols if c in results.twoway_percentages}
+            if tw_stats_orig:
+                st.dataframe(get_twoway_differences_summary(tw_stats_orig), hide_index=True)
+    else:
+        # Combine data for plotting
+        plot_df = pd.concat([data[[group_col]].reset_index(drop=True),
+                             percentages[selected_pct_cols].reset_index(drop=True)], axis=1)
+        plot_df_display = plot_df.rename(columns=display_cols)
+
+        # Get stats results with display names
+        stats_dict = {}
+        for pct_col in selected_pct_cols:
+            display_name = pct_col.replace('_pct', '')
+            if pct_col in results.percentages_results:
+                stats_dict[display_name] = results.percentages_results[pct_col]
+
+        fig = viz.plot_multi_panel_groups_with_stats(
+            plot_df_display, display_names, group_col, stats_dict,
+            ncols=3, plot_type=settings['plot_type'], log_scale=False,
+            show_points=settings['show_points']
+        )
+
+        for ax in fig.get_axes():
+            if ax.get_visible():
+                ax.set_ylabel('% of Total BA')
+
+        st.pyplot(fig)
+        store_figure(fig, 'percentages')
+        plt.close(fig)
+
     # =========================================================================
     # SECTION 2: Pie Charts - Pool Composition
     # =========================================================================
     st.markdown("---")
     st.markdown("#### Pool Composition - Pie Charts")
     st.caption("Visual breakdown of bile acid pool for each group (top contributors)")
-    
-    # Use top 15 percentage columns for pie charts (show full composition)
+
     all_pct_cols = percentages[pct_cols].mean().nlargest(15).index.tolist()
-    pie_df = pd.concat([data[[group_col]].reset_index(drop=True), 
-                        percentages[all_pct_cols].reset_index(drop=True)], axis=1)
+
+    if is_twoway:
+        # Create combined group column for composition charts
+        comp_group_col = '_factorial_group_'
+        comp_data = data.copy()
+        comp_data[comp_group_col] = comp_data[results.factor_a_col].astype(str) + ' - ' + comp_data[results.factor_b_col].astype(str)
+        pie_df = pd.concat([comp_data[[comp_group_col]].reset_index(drop=True),
+                           percentages[all_pct_cols].reset_index(drop=True)], axis=1)
+    else:
+        comp_group_col = group_col
+        pie_df = pd.concat([data[[group_col]].reset_index(drop=True),
+                           percentages[all_pct_cols].reset_index(drop=True)], axis=1)
     
     fig_pie = viz.plot_composition_pie_charts(
         pie_df, group_col, all_pct_cols,

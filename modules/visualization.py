@@ -1062,6 +1062,451 @@ class BileAcidVisualizer:
         plt.tight_layout()
         return fig
     
+    # ===================================================================
+    # TWO-WAY ANOVA VISUALIZATION METHODS
+    # ===================================================================
+
+    def plot_twoway_bar(
+        self,
+        data: pd.DataFrame,
+        value_col: str,
+        factor_a_col: str,
+        factor_b_col: str,
+        twoway_result=None,
+        ax: Optional[plt.Axes] = None,
+        factor_a_name: Optional[str] = None,
+        factor_b_name: Optional[str] = None,
+        ylabel: str = "Concentration",
+        show_points: bool = True,
+        title: Optional[str] = None,
+        show_anova_text: bool = True,
+        plot_type: str = "bar",
+    ) -> plt.Axes:
+        """
+        Create grouped plot for two-way ANOVA.
+
+        Factor A on x-axis, Factor B as hue/color with legend.
+        Supports bar, box, strip, and violin plot types.
+        """
+        import math
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=self.figsize_single)
+
+        fa_name = factor_a_name or factor_a_col
+        fb_name = factor_b_name or factor_b_col
+
+        # Clean data
+        df = data[[value_col, factor_a_col, factor_b_col]].dropna().copy()
+        df[value_col] = pd.to_numeric(df[value_col], errors='coerce')
+        df = df.dropna()
+
+        # Get ordered levels
+        a_levels = sorted(df[factor_a_col].unique())
+        b_levels = sorted(df[factor_b_col].unique())
+        n_a = len(a_levels)
+        n_b = len(b_levels)
+
+        # Bar positioning
+        bar_width = 0.8 / n_b
+        x_base = np.arange(n_a)
+        palette = self.group_palette[:n_b]
+        palette_dict = dict(zip(b_levels, palette))
+
+        if plot_type == "box":
+            sns.boxplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+                       ax=ax, palette=palette_dict, order=a_levels, hue_order=b_levels)
+            if show_points:
+                sns.stripplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+                             ax=ax, dodge=True, color='black', alpha=0.6, size=4,
+                             order=a_levels, hue_order=b_levels, legend=False,
+                             jitter=0.15, zorder=10, edgecolor='white', linewidth=0.3)
+        elif plot_type == "violin":
+            sns.violinplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+                          ax=ax, palette=palette_dict, order=a_levels, hue_order=b_levels,
+                          inner=None)
+            if show_points:
+                sns.stripplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+                             ax=ax, dodge=True, color='black', alpha=0.6, size=4,
+                             order=a_levels, hue_order=b_levels, legend=False,
+                             jitter=0.15, zorder=10, edgecolor='white', linewidth=0.3)
+        elif plot_type == "strip":
+            sns.stripplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+                         ax=ax, dodge=True, palette=palette_dict, order=a_levels, hue_order=b_levels,
+                         size=4, alpha=0.6)
+            # Add mean +/- SEM lines
+            for j, b_level in enumerate(b_levels):
+                x_pos = x_base + (j - (n_b - 1) / 2) * bar_width
+                for i_a, a_level in enumerate(a_levels):
+                    cell = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][value_col]
+                    if len(cell) > 0:
+                        m, s = cell.mean(), cell.sem() if len(cell) > 1 else 0
+                        ax.hlines(m, x_pos[i_a] - bar_width * 0.35, x_pos[i_a] + bar_width * 0.35,
+                                 color='black', linewidth=1.5, zorder=5)
+                        ax.errorbar(x_pos[i_a], m, yerr=s, color='black',
+                                   capsize=4, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)
+        else:  # "bar"
+            for j, b_level in enumerate(b_levels):
+                x_pos = x_base + (j - (n_b - 1) / 2) * bar_width
+                means = []
+                sems = []
+                for a_level in a_levels:
+                    cell = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][value_col]
+                    means.append(cell.mean() if len(cell) > 0 else 0)
+                    sems.append(cell.sem() if len(cell) > 1 else 0)
+
+                ax.bar(x_pos, means, width=bar_width * 0.9, yerr=sems,
+                       capsize=3, color=palette[j], edgecolor='black', linewidth=0.5,
+                       label=str(b_level), zorder=2)
+
+                if show_points:
+                    for i, a_level in enumerate(a_levels):
+                        cell_vals = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][value_col]
+                        if len(cell_vals) > 0:
+                            jitter = np.random.normal(0, bar_width * 0.08, len(cell_vals))
+                            ax.scatter(x_pos[i] + jitter, cell_vals, color='black', alpha=0.6,
+                                       s=20, zorder=10, edgecolors='white', linewidths=0.3)
+
+            ax.set_xticks(x_base)
+            ax.set_xticklabels(a_levels)
+
+        ax.set_xlabel(fa_name)
+        ax.set_ylabel(ylabel)
+
+        # Add post-hoc significance brackets FIRST (they expand y-axis)
+        if twoway_result is not None and twoway_result.posthoc_results is not None:
+            self._add_twoway_significance_bars(
+                ax, df, value_col, factor_a_col, factor_b_col,
+                a_levels, b_levels, bar_width, twoway_result
+            )
+
+        # Add ANOVA p-value text annotation AFTER brackets
+        if twoway_result is not None and show_anova_text:
+            tw = twoway_result
+            def _stars(p):
+                if p is None or (isinstance(p, float) and math.isnan(p)):
+                    return 'N/A'
+                if p < 0.001: return '***'
+                if p < 0.01: return '**'
+                if p < 0.05: return '*'
+                return 'n.s.'
+            def _fmt_p(p):
+                if p is None or (isinstance(p, float) and math.isnan(p)):
+                    return 'N/A'
+                return f"{p:.3f}"
+
+            anova_text = (
+                f"{tw.factor_a_name}: p={_fmt_p(tw.factor_a_pvalue)} {_stars(tw.factor_a_pvalue)}\n"
+                f"{tw.factor_b_name}: p={_fmt_p(tw.factor_b_pvalue)} {_stars(tw.factor_b_pvalue)}\n"
+                f"{tw.factor_a_name}\u00d7{tw.factor_b_name}: p={_fmt_p(tw.interaction_pvalue)} {_stars(tw.interaction_pvalue)}"
+            )
+            y_lo, y_hi = ax.get_ylim()
+            ax.set_ylim(top=y_hi + (y_hi - y_lo) * 0.15)
+            ax.text(0.02, 0.98, anova_text, transform=ax.transAxes,
+                    fontsize=7, verticalalignment='top', fontfamily='monospace',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
+
+        # Legend
+        ax.legend(title=fb_name, loc='upper right', framealpha=0.9)
+
+        if title:
+            ax.set_title(title, fontsize=10)
+        elif twoway_result is not None:
+            p_int = twoway_result.interaction_pvalue
+            sig_marker = '*' if twoway_result.interaction_significant else ''
+            p_str = 'N/A' if (p_int is None or (isinstance(p_int, float) and math.isnan(p_int))) else f"{p_int:.3f}"
+            ax.set_title(f"{value_col} (interaction p={p_str}){sig_marker}", fontsize=10)
+        else:
+            ax.set_title(value_col, fontsize=10)
+
+        return ax
+
+    def _add_twoway_significance_bars(
+        self,
+        ax: plt.Axes,
+        data: pd.DataFrame,
+        value_col: str,
+        factor_a_col: str,
+        factor_b_col: str,
+        a_levels: list,
+        b_levels: list,
+        bar_width: float,
+        twoway_result,
+        max_bars: int = 4
+    ):
+        """Add significance bracket annotations for two-way post-hoc comparisons."""
+        import math
+
+        posthoc = twoway_result.posthoc_results
+        if posthoc is None or len(posthoc) == 0:
+            return
+
+        sig_rows = posthoc[posthoc['significant']].copy()
+        p_col = 'pvalue_adj' if 'pvalue_adj' in sig_rows.columns else 'pvalue'
+        sig_rows = sig_rows.sort_values(p_col).head(max_bars)
+
+        if len(sig_rows) == 0:
+            return
+
+        # Calculate y positions for brackets
+        y_max = ax.get_ylim()[1]
+        y_step = (y_max - ax.get_ylim()[0]) * 0.06
+        current_y = y_max
+
+        n_b = len(b_levels)
+        x_base = np.arange(len(a_levels))
+
+        for _, row in sig_rows.iterrows():
+            p = row.get('pvalue_adj', row.get('pvalue', 1.0))
+
+            g1, g2 = str(row['group1']), str(row['group2'])
+            within_level = str(row.get('within_level', 'all'))
+            factor_compared = row.get('factor_compared', '')
+
+            if twoway_result.posthoc_type == "main_effect_marginal":
+                if factor_compared == twoway_result.factor_a_name:
+                    anova_p = twoway_result.factor_a_pvalue
+                    if anova_p is not None and not (isinstance(anova_p, float) and math.isnan(anova_p)):
+                        p = anova_p
+                elif factor_compared == twoway_result.factor_b_name:
+                    anova_p = twoway_result.factor_b_pvalue
+                    if anova_p is not None and not (isinstance(anova_p, float) and math.isnan(anova_p)):
+                        p = anova_p
+
+            if p < 0.001:
+                annot = '***'
+            elif p < 0.01:
+                annot = '**'
+            elif p < 0.05:
+                annot = '*'
+            else:
+                continue
+
+            # Determine x positions for the bracket
+            try:
+                if twoway_result.posthoc_type == "simple_main_effects":
+                    if factor_compared == twoway_result.factor_a_name:
+                        b_idx = b_levels.index(within_level) if within_level in b_levels else 0
+                        a_idx1 = a_levels.index(g1) if g1 in a_levels else None
+                        a_idx2 = a_levels.index(g2) if g2 in a_levels else None
+                        if a_idx1 is None or a_idx2 is None:
+                            continue
+                        x1 = x_base[a_idx1] + (b_idx - (n_b - 1) / 2) * bar_width
+                        x2 = x_base[a_idx2] + (b_idx - (n_b - 1) / 2) * bar_width
+                    else:
+                        a_idx = a_levels.index(within_level) if within_level in a_levels else 0
+                        b_idx1 = b_levels.index(g1) if g1 in b_levels else None
+                        b_idx2 = b_levels.index(g2) if g2 in b_levels else None
+                        if b_idx1 is None or b_idx2 is None:
+                            continue
+                        x1 = x_base[a_idx] + (b_idx1 - (n_b - 1) / 2) * bar_width
+                        x2 = x_base[a_idx] + (b_idx2 - (n_b - 1) / 2) * bar_width
+                else:
+                    if factor_compared == twoway_result.factor_a_name:
+                        a_idx1 = a_levels.index(g1) if g1 in a_levels else None
+                        a_idx2 = a_levels.index(g2) if g2 in a_levels else None
+                        if a_idx1 is None or a_idx2 is None:
+                            continue
+                        x1 = x_base[a_idx1]
+                        x2 = x_base[a_idx2]
+                    else:
+                        continue
+            except (ValueError, IndexError):
+                continue
+
+            # Draw bracket
+            bracket_y = current_y
+            ax.plot([x1, x1, x2, x2],
+                    [bracket_y, bracket_y + y_step * 0.3, bracket_y + y_step * 0.3, bracket_y],
+                    color='black', linewidth=0.8)
+            ax.text((x1 + x2) / 2, bracket_y + y_step * 0.35, annot,
+                    ha='center', va='bottom', fontsize=8, fontweight='bold')
+            current_y += y_step
+
+        # Expand y-axis to fit brackets
+        ax.set_ylim(top=current_y + y_step)
+
+    def plot_twoway_interaction(
+        self,
+        data: pd.DataFrame,
+        value_col: str,
+        factor_a_col: str,
+        factor_b_col: str,
+        twoway_result=None,
+        ax: Optional[plt.Axes] = None,
+        factor_a_name: Optional[str] = None,
+        factor_b_name: Optional[str] = None,
+        ylabel: str = "Concentration",
+    ) -> plt.Axes:
+        """
+        Create interaction plot (line plot) for two-way ANOVA.
+
+        Factor A on x-axis, separate lines for each Factor B level.
+        Shows means +/- SEM. Parallel lines = no interaction,
+        crossing/diverging lines = interaction present.
+        """
+        import math
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=self.figsize_single)
+
+        fa_name = factor_a_name or factor_a_col
+        fb_name = factor_b_name or factor_b_col
+
+        df = data[[value_col, factor_a_col, factor_b_col]].dropna().copy()
+        df[value_col] = pd.to_numeric(df[value_col], errors='coerce')
+        df = df.dropna()
+
+        a_levels = sorted(df[factor_a_col].unique())
+        b_levels = sorted(df[factor_b_col].unique())
+        palette = self.group_palette[:len(b_levels)]
+        markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p']
+
+        x_pos = np.arange(len(a_levels))
+
+        for j, b_level in enumerate(b_levels):
+            means = []
+            sems = []
+            for a_level in a_levels:
+                cell = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][value_col]
+                means.append(cell.mean() if len(cell) > 0 else np.nan)
+                sems.append(cell.sem() if len(cell) > 1 else 0)
+
+            marker = markers[j % len(markers)]
+            ax.errorbar(x_pos, means, yerr=sems,
+                       marker=marker, markersize=8,
+                       color=palette[j], linewidth=2,
+                       capsize=4, capthick=1.5,
+                       label=str(b_level), zorder=5)
+
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(a_levels)
+        ax.set_xlabel(fa_name)
+        ax.set_ylabel(ylabel)
+        ax.legend(title=fb_name, loc='best')
+
+        title = f"{value_col} — Interaction Plot"
+        if twoway_result is not None:
+            p_int = twoway_result.interaction_pvalue
+            sig = "SIGNIFICANT" if twoway_result.interaction_significant else "n.s."
+            p_str = 'N/A' if (p_int is None or (isinstance(p_int, float) and math.isnan(p_int))) else f"{p_int:.3f}"
+            title += f"\n(interaction p={p_str}, {sig})"
+        ax.set_title(title, fontsize=10)
+
+        return ax
+
+    def plot_twoway_multi_panel(
+        self,
+        data: pd.DataFrame,
+        value_cols: List[str],
+        factor_a_col: str,
+        factor_b_col: str,
+        twoway_results: Dict = None,
+        ncols: int = 3,
+        figsize: Optional[Tuple[float, float]] = None,
+        factor_a_name: Optional[str] = None,
+        factor_b_name: Optional[str] = None,
+        ylabel: str = "Concentration",
+        show_points: bool = True,
+        plot_type: str = "bar",
+    ) -> plt.Figure:
+        """
+        Create multi-panel two-way grouped plots with significance annotations.
+
+        Each panel shows one analyte with Factor A on x-axis, Factor B as hue.
+        """
+        n_plots = len(value_cols)
+        nrows = int(np.ceil(n_plots / ncols))
+
+        if figsize is None:
+            figsize = (ncols * 4.5, nrows * 4.5)
+
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+        if n_plots == 1:
+            axes = np.array([axes])
+        axes = axes.flatten()
+
+        for i, col in enumerate(value_cols):
+            if col not in data.columns:
+                axes[i].set_visible(False)
+                continue
+
+            tw_result = None
+            if twoway_results and col in twoway_results:
+                result_obj = twoway_results[col]
+                if hasattr(result_obj, 'twoway_result'):
+                    tw_result = result_obj.twoway_result
+                else:
+                    tw_result = result_obj
+
+            self.plot_twoway_bar(
+                data=data, value_col=col,
+                factor_a_col=factor_a_col, factor_b_col=factor_b_col,
+                twoway_result=tw_result, ax=axes[i],
+                factor_a_name=factor_a_name, factor_b_name=factor_b_name,
+                ylabel=ylabel, show_points=show_points,
+                plot_type=plot_type,
+            )
+
+        # Hide empty panels
+        for i in range(n_plots, len(axes)):
+            axes[i].set_visible(False)
+
+        plt.tight_layout()
+        return fig
+
+    def plot_twoway_interaction_multi_panel(
+        self,
+        data: pd.DataFrame,
+        value_cols: List[str],
+        factor_a_col: str,
+        factor_b_col: str,
+        twoway_results: Dict = None,
+        ncols: int = 3,
+        figsize: Optional[Tuple[float, float]] = None,
+        factor_a_name: Optional[str] = None,
+        factor_b_name: Optional[str] = None,
+        ylabel: str = "Concentration",
+    ) -> plt.Figure:
+        """Multi-panel interaction (line) plots for two-way ANOVA."""
+        n_plots = len(value_cols)
+        nrows = int(np.ceil(n_plots / ncols))
+
+        if figsize is None:
+            figsize = (ncols * 4.5, nrows * 4)
+
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+        if n_plots == 1:
+            axes = np.array([axes])
+        axes = axes.flatten()
+
+        for i, col in enumerate(value_cols):
+            if col not in data.columns:
+                axes[i].set_visible(False)
+                continue
+
+            tw_result = None
+            if twoway_results and col in twoway_results:
+                result_obj = twoway_results[col]
+                if hasattr(result_obj, 'twoway_result'):
+                    tw_result = result_obj.twoway_result
+                else:
+                    tw_result = result_obj
+
+            self.plot_twoway_interaction(
+                data=data, value_col=col,
+                factor_a_col=factor_a_col, factor_b_col=factor_b_col,
+                twoway_result=tw_result, ax=axes[i],
+                factor_a_name=factor_a_name, factor_b_name=factor_b_name,
+                ylabel=ylabel,
+            )
+
+        for i in range(n_plots, len(axes)):
+            axes[i].set_visible(False)
+
+        plt.tight_layout()
+        return fig
+
     def save_figure(
         self,
         fig: plt.Figure,

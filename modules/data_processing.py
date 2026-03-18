@@ -48,6 +48,11 @@ class DataStructureInfo:
     analyte_lod_rows: Dict[str, List[int]] = field(default_factory=dict)  # Row indices with LOD replacements per analyte
     lod_source: str = "default"  # "standards" or "default"
 
+    # Two-way ANOVA factor detection
+    factors: Dict[str, str] = field(default_factory=dict)  # {display_name: column_name}
+    n_factors: int = 0  # 0 = no factors detected, 1 = one-way, 2 = two-way
+    factor_source: str = ""  # "metadata_sheet", "prefix_columns", or ""
+
 
 @dataclass
 class ProcessedData:
@@ -522,7 +527,177 @@ class BileAcidDataProcessor:
                 return False  # Pure numbers aren't group names
         
         return True
-    
+
+    # ================================================================
+    # TWO-WAY ANOVA: Factor Detection Methods
+    # ================================================================
+
+    FACTOR_PREFIX = 'Factor_'
+    METADATA_SHEET_PATTERNS = [
+        r'sample[\s_-]*meta',
+        r'metadata',
+        r'factors',
+        r'groups',
+        r'design',
+    ]
+
+    def _detect_factor_prefix_columns(
+        self,
+        df: pd.DataFrame,
+        structure: DataStructureInfo
+    ) -> Dict[str, str]:
+        """
+        Detect columns with 'Factor_' prefix in the data sheet.
+
+        Columns like 'Factor_Age', 'Factor_Sex' are detected and the
+        factor name is extracted by stripping the prefix.
+
+        Returns:
+            Dict mapping factor display name to column name.
+            e.g., {'Age': 'Factor_Age', 'Sex': 'Factor_Sex'}
+        """
+        factors = {}
+
+        for col in df.columns:
+            col_str = str(col).strip()
+            if col_str.startswith(self.FACTOR_PREFIX) and len(col_str) > len(self.FACTOR_PREFIX):
+                factor_name = col_str[len(self.FACTOR_PREFIX):]
+                if col_str in df.columns:
+                    col_data = df[col_str].dropna()
+                    unique_vals = col_data.astype(str).str.strip().unique()
+                    # Factor should have 2-20 unique levels and repeated values
+                    if 2 <= len(unique_vals) <= 20 and len(unique_vals) < len(col_data):
+                        factors[factor_name] = col_str
+
+        return factors
+
+    def _detect_metadata_sheet(
+        self,
+        filepath: Union[str, Path],
+        data_df: pd.DataFrame,
+        structure: DataStructureInfo
+    ) -> Dict[str, str]:
+        """
+        Look for a 'sample_metadata' sheet that maps Sample_IDs to factors.
+
+        Expected format:
+        - Column 1: Sample_ID (must match data sheet sample IDs)
+        - Additional columns: one per factor (column name = factor name)
+
+        Returns:
+            Dict mapping factor display name to column name in the merged data.
+            Empty dict if no metadata sheet found.
+        """
+        filepath = Path(filepath)
+
+        try:
+            sheets = self.get_available_sheets(filepath)
+        except Exception:
+            return {}
+
+        # Find metadata sheet
+        meta_sheet = None
+        for pattern in self.METADATA_SHEET_PATTERNS:
+            for sheet in sheets:
+                if re.search(pattern, sheet, re.IGNORECASE):
+                    meta_sheet = sheet
+                    break
+            if meta_sheet:
+                break
+
+        if meta_sheet is None:
+            return {}
+
+        try:
+            if filepath.suffix.lower() == '.ods':
+                engine = 'odf'
+            elif filepath.suffix.lower() in ['.xlsx', '.xlsm']:
+                engine = 'openpyxl'
+            elif filepath.suffix.lower() == '.xls':
+                engine = 'xlrd'
+            else:
+                engine = None
+
+            meta_df = pd.read_excel(filepath, sheet_name=meta_sheet, engine=engine)
+
+            if meta_df.empty or len(meta_df.columns) < 2:
+                return {}
+
+            # First column should be sample IDs
+            id_col = meta_df.columns[0]
+            meta_ids = set(meta_df[id_col].astype(str).str.strip())
+
+            # Verify some overlap with data sheet sample IDs
+            if structure.sample_id_col and structure.sample_id_col in data_df.columns:
+                data_ids = set(data_df[structure.sample_id_col].astype(str).str.strip())
+                overlap = meta_ids & data_ids
+                if len(overlap) < 2:
+                    return {}  # Not enough matching IDs
+
+            # Extract factor columns (all columns after the ID column)
+            factors = {}
+            for col in meta_df.columns[1:]:
+                col_str = str(col).strip()
+                if col_str.lower() in ['nan', '', 'none']:
+                    continue
+
+                unique_vals = meta_df[col].dropna().astype(str).str.strip().unique()
+                if 2 <= len(unique_vals) <= 20:
+                    factor_col_name = f'Factor_{col_str}'
+                    factors[col_str] = factor_col_name
+
+            if factors:
+                self._metadata_df = meta_df
+                self._metadata_id_col = id_col
+                self._metadata_factors = factors
+
+            return factors
+
+        except Exception as e:
+            warnings.warn(f"Could not read metadata sheet '{meta_sheet}': {e}")
+            return {}
+
+    def _merge_metadata_factors(
+        self,
+        data_df: pd.DataFrame,
+        structure: DataStructureInfo
+    ) -> pd.DataFrame:
+        """
+        Merge factor columns from metadata sheet into the data DataFrame.
+        """
+        if not hasattr(self, '_metadata_df') or self._metadata_df is None:
+            return data_df
+
+        meta_df = self._metadata_df
+        id_col_meta = self._metadata_id_col
+        id_col_data = structure.sample_id_col
+
+        if not id_col_data or id_col_data not in data_df.columns:
+            return data_df
+
+        meta_merge = meta_df.copy()
+        meta_merge[id_col_meta] = meta_merge[id_col_meta].astype(str).str.strip()
+
+        # Rename factor columns to Factor_ prefix
+        rename_map = {id_col_meta: id_col_data}
+        for factor_name, factor_col in self._metadata_factors.items():
+            original_col = factor_name
+            if original_col in meta_merge.columns:
+                rename_map[original_col] = factor_col
+
+        meta_merge = meta_merge.rename(columns=rename_map)
+
+        # Keep only ID and factor columns
+        keep_cols = [id_col_data] + list(self._metadata_factors.values())
+        keep_cols = [c for c in keep_cols if c in meta_merge.columns]
+        meta_merge = meta_merge[keep_cols]
+
+        # Merge
+        data_df[id_col_data] = data_df[id_col_data].astype(str).str.strip()
+        merged = data_df.merge(meta_merge, on=id_col_data, how='left')
+
+        return merged
+
     def clean_data(
         self, 
         df: pd.DataFrame, 
@@ -793,7 +968,32 @@ class BileAcidDataProcessor:
         
         # Clean data (uses per-analyte LODs)
         clean_df = self.clean_data(raw_df.copy(), structure)
-        
+
+        # ================================================================
+        # Detect two-way factorial design (Factor_ columns or metadata sheet)
+        # ================================================================
+        self._metadata_df = None
+        self._metadata_id_col = None
+        self._metadata_factors = {}
+
+        # Entry Point A: Check for sample_metadata sheet (takes precedence)
+        meta_factors = self._detect_metadata_sheet(filepath, clean_df, structure)
+
+        if meta_factors:
+            structure.factors = meta_factors
+            structure.n_factors = min(len(meta_factors), 2)
+            structure.factor_source = "metadata_sheet"
+            clean_df = self._merge_metadata_factors(clean_df, structure)
+            print(f"Detected {len(meta_factors)} factor(s) from metadata sheet: {list(meta_factors.keys())}")
+        else:
+            # Entry Point B: Check for Factor_ prefixed columns in data sheet
+            prefix_factors = self._detect_factor_prefix_columns(clean_df, structure)
+            if prefix_factors:
+                structure.factors = prefix_factors
+                structure.n_factors = min(len(prefix_factors), 2)
+                structure.factor_source = "prefix_columns"
+                print(f"Detected {len(prefix_factors)} factor(s) from column prefixes: {list(prefix_factors.keys())}")
+
         # Extract sample data (with metadata)
         sample_df = clean_df.copy()
         
