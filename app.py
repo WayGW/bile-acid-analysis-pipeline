@@ -444,15 +444,13 @@ def render_concentrations_tab(processed, settings):
     data = data[data[group_col].astype(str).str.lower() != 'nan']
     available_bas = processed.structure.bile_acid_cols
     
-    col1, col2 = st.columns([1, 2], vertical_alignment="bottom")
-    with col1:
-        quick = st.segmented_control("Quick select", ["Top 10", "Significant", "Primary", "Secondary", "Custom"],
-                                      default="Top 10")
+    quick = st.segmented_control("Quick select", ["Top 10", "Significant", "Primary", "Secondary", "Custom"],
+                                  default="Top 10")
 
     if quick == "Top 10":
         selected = processed.concentrations.mean().nlargest(10).index.tolist()
     elif quick == "Significant":
-        selected = [b for b in available_bas if b in results.individual_ba_results 
+        selected = [b for b in available_bas if b in results.individual_ba_results
                    and results.individual_ba_results[b].main_test.significant][:10]
         if not selected:
             st.info("No significant individual BAs found.")
@@ -462,8 +460,7 @@ def render_concentrations_tab(processed, settings):
     elif quick == "Secondary":
         selected = [b for b in get_secondary() if b in available_bas][:10]
     else:
-        with col2:
-            selected = st.multiselect("Select BAs", available_bas, available_bas[:5])
+        selected = st.multiselect("Select BAs", available_bas, available_bas[:5])
     
     log_scale = st.checkbox("Log₁₀ scale", key="conc_log")
     
@@ -562,18 +559,16 @@ def render_percentages_tab(processed, settings):
     pct_cols = [c for c in percentages.columns if c.endswith('_pct')]
     ba_names = [c.replace('_pct', '') for c in pct_cols]
     
-    col1, col2 = st.columns([1, 2], vertical_alignment="bottom")
-    with col1:
-        quick = st.pills("Quick select",
-                         ["Top 10 by mean %", "Significant", "Primary", "Secondary",
-                          "Glycine conjugated", "Taurine conjugated", "Custom"],
-                         default="Top 10 by mean %", key="pct_quick")
-    
+    quick = st.pills("Quick select",
+                     ["Top 10 by mean %", "Significant", "Primary", "Secondary",
+                      "Glycine conjugated", "Taurine conjugated", "Custom"],
+                     default="Top 10 by mean %", key="pct_quick")
+
     if quick == "Top 10 by mean %":
         top_pcts = percentages[pct_cols].mean().nlargest(10).index.tolist()
         selected_pct_cols = top_pcts
     elif quick == "Significant":
-        selected_pct_cols = [c for c in pct_cols if c in results.percentages_results 
+        selected_pct_cols = [c for c in pct_cols if c in results.percentages_results
                            and results.percentages_results[c].main_test.significant][:10]
         if not selected_pct_cols:
             st.info("No significant percentage differences found. Showing top 10 by mean %.")
@@ -591,9 +586,8 @@ def render_percentages_tab(processed, settings):
         taurine_bas = get_taurine_conjugated()
         selected_pct_cols = [f'{ba}_pct' for ba in taurine_bas if f'{ba}_pct' in pct_cols][:10]
     else:
-        with col2:
-            selected_bas = st.multiselect("Select bile acids", ba_names, ba_names[:5], key="pct_custom")
-            selected_pct_cols = [f'{ba}_pct' for ba in selected_bas]
+        selected_bas = st.multiselect("Select bile acids", ba_names, ba_names[:5], key="pct_custom")
+        selected_pct_cols = [f'{ba}_pct' for ba in selected_bas]
     
     if not selected_pct_cols:
         st.warning("No bile acids selected.")
@@ -772,20 +766,18 @@ def render_ratios_tab(processed, settings):
         return
     
     # Quick select options
-    col1, col2 = st.columns([1, 2], vertical_alignment="bottom")
-    with col1:
-        quick = st.segmented_control("Quick select",
-                                      ["All ratios", "Significant only", "Key ratios", "Custom"],
-                                      default="All ratios", key="ratio_quick")
-    
+    quick = st.segmented_control("Quick select",
+                                  ["All ratios", "Significant only", "Key ratios", "Custom"],
+                                  default="All ratios", key="ratio_quick")
+
     # Define key clinical ratios
     key_ratios = ['primary_to_secondary', 'glycine_to_taurine', 'conjugated_to_unconjugated',
                   'CA_to_CDCA', 'TCA_to_GCA', 'GCDCA_to_TCDCA']
-    
+
     if quick == "All ratios":
         selected_ratios = available
     elif quick == "Significant only":
-        selected_ratios = [r for r in available if r in results.ratios_results 
+        selected_ratios = [r for r in available if r in results.ratios_results
                          and results.ratios_results[r].main_test.significant]
         if not selected_ratios:
             st.info("No significant ratio differences found. Showing all ratios.")
@@ -795,10 +787,9 @@ def render_ratios_tab(processed, settings):
         if not selected_ratios:
             selected_ratios = available[:6]
     else:
-        with col2:
-            selected_ratios = st.multiselect("Select ratios", available, 
-                                             default=available[:6] if len(available) >= 6 else available,
-                                             key="ratio_custom")
+        selected_ratios = st.multiselect("Select ratios", available,
+                                         default=available[:6] if len(available) >= 6 else available,
+                                         key="ratio_custom")
     
     if not selected_ratios:
         st.warning("No ratios selected.")

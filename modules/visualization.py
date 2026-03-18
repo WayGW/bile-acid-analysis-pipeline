@@ -124,7 +124,7 @@ class BileAcidVisualizer:
             floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
             data[log_col] = np.log10(data[value_col].clip(lower=floor_val))
             plot_col = log_col
-            plot_ylabel = f'logâ‚â‚€({ylabel or value_col})'
+            plot_ylabel = f'log₁₀({ylabel or value_col})'
         
         if plot_type == "bar":
             means = data.groupby(group_col)[plot_col].mean()
@@ -338,7 +338,7 @@ class BileAcidVisualizer:
             floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
             data[log_col] = np.log10(data[ratio_col].clip(lower=floor_val))
             plot_col = log_col
-            ylabel = f'logâ‚â‚€({ratio_col})'
+            ylabel = f'log₁₀({ratio_col})'
         
         # Plot based on type
         if plot_type == "violin":
@@ -524,7 +524,7 @@ class BileAcidVisualizer:
                 floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
                 plot_data[log_col] = np.log10(plot_data[col].clip(lower=floor_val))
                 plot_col = log_col
-                ylabel = f'logâ‚â‚€({col})'
+                ylabel = f'log₁₀({col})'
             
             if plot_type == "box":
                 sns.boxplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
@@ -573,10 +573,7 @@ class BileAcidVisualizer:
                 ax.set_title(col, fontsize=10)
             
             ax.set_xlabel('')
-            if log_scale:
-                ax.set_ylabel(f'log₁₀({ylabel})')
-            else:
-                ax.set_ylabel(ylabel)
+            ax.set_ylabel(ylabel)
             ax.tick_params(axis='x', rotation=45)
         
         for i in range(n_plots, len(axes)):
@@ -663,7 +660,7 @@ class BileAcidVisualizer:
                 min_positive = data[col][data[col] > 0].min()
                 floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
                 data[col] = np.log10(data[col].clip(lower=floor_val))
-            plot_ylabel = f'logâ‚â‚€({ylabel})'
+            plot_ylabel = f'log₁₀({ylabel})'
         
         groups = data[group_col].unique().tolist()
         n_groups = len(groups)
