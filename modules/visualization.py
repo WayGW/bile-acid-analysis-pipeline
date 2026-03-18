@@ -155,8 +155,8 @@ class BileAcidVisualizer:
                 
         elif plot_type == "violin":
             sns.violinplot(data=data, x=group_col, y=plot_col, ax=ax,
-                          hue=group_col, palette=palette, order=groups, 
-                          inner='box', legend=False)
+                          hue=group_col, palette=palette, order=groups,
+                          inner='box', legend=False, cut=0)
             if show_points:
                 sns.stripplot(data=data, x=group_col, y=plot_col, ax=ax,
                             color='black', alpha=0.5, size=4, order=groups)
@@ -343,8 +343,8 @@ class BileAcidVisualizer:
         # Plot based on type
         if plot_type == "violin":
             sns.violinplot(data=data, x=group_col, y=plot_col, ax=ax,
-                          hue=group_col, palette=colors, order=groups, 
-                          inner=None, alpha=0.3, legend=False)
+                          hue=group_col, palette=colors, order=groups,
+                          inner=None, alpha=0.3, legend=False, cut=0)
             if show_points:
                 sns.stripplot(data=data, x=group_col, y=plot_col, ax=ax,
                              hue=group_col, palette=colors, order=groups, 
@@ -409,13 +409,15 @@ class BileAcidVisualizer:
         
         n_plots = len(value_cols)
         nrows = int(np.ceil(n_plots / ncols))
-        
+
         if figsize is None:
-            figsize = (ncols * 4, nrows * 3.5)
-        
+            col_width = 4
+            row_height = 4.5 if plot_type == "box" else 5
+            figsize = (ncols * col_width, nrows * row_height)
+
         fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharey=sharey)
         axes = axes.flatten() if n_plots > 1 else [axes]
-        
+
         # Get valid groups only (no NaN)
         groups = [g for g in data[group_col].unique() if pd.notna(g)]
         palette = dict(zip(groups, self.group_palette[:len(groups)]))
@@ -429,8 +431,8 @@ class BileAcidVisualizer:
                           hue=group_col, palette=palette, order=groups, legend=False)
             elif plot_type == "violin":
                 sns.violinplot(data=data, x=group_col, y=col, ax=axes[i],
-                             hue=group_col, palette=palette, order=groups, 
-                             inner='box', legend=False)
+                             hue=group_col, palette=palette, order=groups,
+                             inner='box', legend=False, cut=0)
             elif plot_type == "bar":
                 means = data.groupby(group_col)[col].mean()
                 sems = data.groupby(group_col)[col].sem()
@@ -449,13 +451,13 @@ class BileAcidVisualizer:
             else:
                 axes[i].set_ylabel('')
             axes[i].tick_params(axis='x', rotation=45)
-        
+
         for i in range(n_plots, len(axes)):
             axes[i].set_visible(False)
-        
-        plt.tight_layout()
+
+        fig.subplots_adjust(hspace=0.45, wspace=0.35)
         return fig
-    
+
     def plot_multi_panel_groups_with_stats(
         self,
         data: pd.DataFrame,
@@ -496,8 +498,10 @@ class BileAcidVisualizer:
         nrows = int(np.ceil(n_plots / ncols))
         
         if figsize is None:
-            figsize = (ncols * 4, nrows * 4)  # Slightly taller for significance bars
-        
+            col_width = 4
+            row_height = 4.5 if plot_type == "box" else 5
+            figsize = (ncols * col_width, nrows * row_height)
+
         fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharey=sharey)
         axes = axes.flatten() if n_plots > 1 else [axes]
         
@@ -535,8 +539,8 @@ class BileAcidVisualizer:
                                 jitter=0.2, zorder=10, edgecolor='white', linewidth=0.5)
             elif plot_type == "violin":
                 sns.violinplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
-                             hue=group_col, palette=palette, order=groups, 
-                             inner=None, legend=False)  # Remove inner box to show points better
+                             hue=group_col, palette=palette, order=groups,
+                             inner=None, legend=False, cut=0)
                 if show_points:
                     sns.stripplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
                                 color='black', alpha=0.7, size=6, order=groups,
@@ -575,13 +579,13 @@ class BileAcidVisualizer:
             ax.set_xlabel('')
             ax.set_ylabel(ylabel)
             ax.tick_params(axis='x', rotation=45)
-        
+
         for i in range(n_plots, len(axes)):
             axes[i].set_visible(False)
-        
-        plt.tight_layout()
+
+        fig.subplots_adjust(hspace=0.45, wspace=0.35)
         return fig
-    
+
     def _get_significant_pairs(self, result, max_pairs: int = 3) -> List[Tuple[str, str, str]]:
         """Extract significant pairs from statistical result."""
         if not result.posthoc_test or result.posthoc_test.pairwise_results is None:
@@ -692,7 +696,7 @@ class BileAcidVisualizer:
                        ax=ax, palette=palette, order=groups)
         elif plot_type == 'violin':
             sns.violinplot(data=plot_data, x='_Group_', y='Value', hue='_Type_',
-                          ax=ax, palette=palette, order=groups, inner='box')
+                          ax=ax, palette=palette, order=groups, inner='box', cut=0)
         else:  # bar
             sns.barplot(data=plot_data, x='_Group_', y='Value', hue='_Type_',
                        ax=ax, palette=palette, order=groups, capsize=0.1)
