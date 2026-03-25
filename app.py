@@ -516,7 +516,7 @@ def render_sidebar():
     
     st.sidebar.markdown("### 📈 Analysis")
     alpha = st.sidebar.slider("Significance (α)", 0.01, 0.10, 0.05, 0.01)
-    plot_type = st.sidebar.selectbox("Plot type", ["box", "violin", "bar"])
+    plot_type = st.sidebar.selectbox("Plot type", ["box", "violin", "bar", "strip"])
     show_points = st.sidebar.checkbox("Show data points", True)
     
     # Color palette selection

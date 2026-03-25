@@ -1343,12 +1343,25 @@ class SignificancePlotter:
         
         elif plot_type == "violin":
             sns.violinplot(data=data, x=group_col, y=value_col, ax=ax,
-                          hue=group_col, palette=colors, order=group_order, 
+                          hue=group_col, palette=colors, order=group_order,
                           inner='box', legend=False)
             if show_points:
                 sns.stripplot(data=data, x=group_col, y=value_col, ax=ax,
                             color='black', alpha=0.5, size=5, order=group_order)
-        
+
+        elif plot_type == "strip":
+            sns.stripplot(data=data, x=group_col, y=value_col, ax=ax,
+                         hue=group_col, palette=colors, order=group_order,
+                         size=6, alpha=0.7, legend=False)
+            # Add mean ± SEM lines
+            means = data.groupby(group_col)[value_col].mean()
+            sems = data.groupby(group_col)[value_col].sem()
+            for i, g in enumerate(group_order):
+                if g in means.index:
+                    ax.hlines(means[g], i - 0.25, i + 0.25, color='black', linewidth=1.5, zorder=5)
+                    ax.errorbar(i, means[g], yerr=sems[g], color='black',
+                               capsize=5, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)
+
         # Add significance brackets
         self.add_significance_brackets(
             ax, significant_pairs, group_order,
@@ -1426,15 +1439,28 @@ class SignificancePlotter:
                       yerr=[sems[g] for g in group_order],
                       capsize=4, color=[colors[g] for g in group_order],
                       edgecolor='black', linewidth=0.5, alpha=0.8)
-                
+
                 for j, g in enumerate(group_order):
                     gdata = plot_data[plot_data[group_col] == g]['Total']
                     jitter = np.random.normal(0, 0.08, len(gdata))
                     ax.scatter(j + jitter, gdata, color='black', alpha=0.5, s=20, zorder=3)
-                
+
                 ax.set_xticks(x)
                 ax.set_xticklabels(group_order)
-            
+
+            elif plot_type == "strip":
+                sns.stripplot(data=plot_data, x=group_col, y='Total', ax=ax,
+                             hue=group_col, palette=colors, order=group_order,
+                             size=5, alpha=0.7, legend=False)
+                # Add mean ± SEM lines
+                means = plot_data.groupby(group_col)['Total'].mean()
+                sems = plot_data.groupby(group_col)['Total'].sem()
+                for j, g in enumerate(group_order):
+                    if g in means.index:
+                        ax.hlines(means[g], j - 0.25, j + 0.25, color='black', linewidth=1.5, zorder=5)
+                        ax.errorbar(j, means[g], yerr=sems[g], color='black',
+                                   capsize=4, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)
+
             # Add significance brackets
             sig_pairs = report_generator.get_significant_pairs(category)
             self.add_significance_brackets(

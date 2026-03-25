@@ -152,7 +152,18 @@ class BileAcidVisualizer:
             if show_points:
                 sns.stripplot(data=data, x=group_col, y=plot_col, ax=ax,
                             color='black', alpha=0.5, size=4, order=groups)
-                
+        elif plot_type == "strip":
+            sns.stripplot(data=data, x=group_col, y=plot_col, ax=ax,
+                         hue=group_col, palette=palette, order=groups,
+                         size=6, alpha=0.7, legend=False)
+            # Add mean ± SEM lines
+            means = data.groupby(group_col)[plot_col].mean()
+            sems = data.groupby(group_col)[plot_col].sem()
+            for i, g in enumerate(groups):
+                if g in means.index:
+                    ax.hlines(means[g], i - 0.25, i + 0.25, color='black', linewidth=1.5, zorder=5)
+                    ax.errorbar(i, means[g], yerr=sems[g], color='black',
+                               capsize=5, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)        
         elif plot_type == "violin":
             sns.violinplot(data=data, x=group_col, y=plot_col, ax=ax,
                           hue=group_col, palette=palette, order=groups,
@@ -362,7 +373,18 @@ class BileAcidVisualizer:
                 sns.stripplot(data=data, x=group_col, y=plot_col, ax=ax,
                              hue=group_col, palette=colors, order=groups,
                              size=4, alpha=0.6, legend=False)
-                             
+        elif plot_type == "strip":
+            sns.stripplot(data=data, x=group_col, y=plot_col, ax=ax,
+                         hue=group_col, palette=colors, order=groups,
+                         size=6, alpha=0.7, legend=False)
+            # Add mean ± SEM lines
+            means = data.groupby(group_col)[plot_col].mean()
+            sems = data.groupby(group_col)[plot_col].sem()
+            for i, g in enumerate(groups):
+                if g in means.index:
+                    ax.hlines(means[g], i - 0.25, i + 0.25, color='black', linewidth=1.5, zorder=5)
+                    ax.errorbar(i, means[g], yerr=sems[g], color='black',
+                               capsize=5, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)                     
         elif plot_type == "bar":
             sns.barplot(data=data, x=group_col, y=plot_col, ax=ax,
                        hue=group_col, palette=colors, order=groups, 
@@ -433,6 +455,18 @@ class BileAcidVisualizer:
                 sns.violinplot(data=data, x=group_col, y=col, ax=axes[i],
                              hue=group_col, palette=palette, order=groups,
                              inner='box', legend=False, cut=0)
+            elif plot_type == "strip":
+                sns.stripplot(data=data, x=group_col, y=col, ax=axes[i],
+                             hue=group_col, palette=palette, order=groups,
+                             size=6, alpha=0.7, legend=False)
+                # Add mean ± SEM lines
+                grp_means = data.groupby(group_col)[col].mean()
+                grp_sems = data.groupby(group_col)[col].sem()
+                for j, g in enumerate(groups):
+                    if g in grp_means.index:
+                        axes[i].hlines(grp_means[g], j - 0.25, j + 0.25, color='black', linewidth=1.5, zorder=5)
+                        axes[i].errorbar(j, grp_means[g], yerr=grp_sems[g], color='black',
+                                        capsize=5, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)
             elif plot_type == "bar":
                 means = data.groupby(group_col)[col].mean()
                 sems = data.groupby(group_col)[col].sem()
@@ -483,7 +517,7 @@ class BileAcidVisualizer:
             stats_results: Dict of statistical results keyed by column name
             ncols: Number of columns in grid
             figsize: Figure size
-            plot_type: 'box', 'violin', or 'bar'
+            plot_type: 'box', 'violin', 'strip', or 'bar'
             sharey: Share y-axis across panels
             max_sig_bars: Maximum significance bars to show per panel
             log_scale: Whether to log10 transform the data for plotting
@@ -545,6 +579,18 @@ class BileAcidVisualizer:
                     sns.stripplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
                                 color='black', alpha=0.7, size=6, order=groups,
                                 jitter=0.15, zorder=10, edgecolor='white', linewidth=0.5)
+            elif plot_type == "strip":
+                sns.stripplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
+                             hue=group_col, palette=palette, order=groups,
+                             size=6, alpha=0.7, legend=False)
+                # Add mean ± SEM lines
+                grp_means = plot_data.groupby(group_col)[plot_col].mean()
+                grp_sems = plot_data.groupby(group_col)[plot_col].sem()
+                for j, g in enumerate(groups):
+                    if g in grp_means.index:
+                        ax.hlines(grp_means[g], j - 0.25, j + 0.25, color='black', linewidth=1.5, zorder=5)
+                        ax.errorbar(j, grp_means[g], yerr=grp_sems[g], color='black',
+                                   capsize=5, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)
             elif plot_type == "bar":
                 means = plot_data.groupby(group_col)[plot_col].mean()
                 sems = plot_data.groupby(group_col)[plot_col].sem()
@@ -640,7 +686,7 @@ class BileAcidVisualizer:
             stats_results: Dict mapping value_col names to StatisticalResult objects
             title: Plot title
             ylabel: Y-axis label
-            plot_type: 'bar', 'box', or 'violin'
+            plot_type: 'bar', 'box', 'strip', or 'violin'
             figsize: Figure size
             log_scale: Whether to log10 transform the data
             
@@ -696,7 +742,25 @@ class BileAcidVisualizer:
                        ax=ax, palette=palette, order=groups)
         elif plot_type == 'violin':
             sns.violinplot(data=plot_data, x='_Group_', y='Value', hue='_Type_',
-                          ax=ax, palette=palette, order=groups, inner='box', cut=0)
+                          ax=ax, palette=palette, order=groups, inner='box', cut=0)  
+        elif plot_type == 'strip':
+            sns.stripplot(data=plot_data, x='_Group_', y='Value', hue='_Type_',
+                         ax=ax, palette=palette, order=groups, size=6, alpha=0.7)
+            # Add mean ± SEM lines for each type within each group
+            x = np.arange(n_groups)
+            width = 0.8 / n_types
+            for t_idx, label in enumerate(value_labels):
+                offset = (t_idx - n_types / 2 + 0.5) * width
+                type_data = plot_data[plot_data['_Type_'] == label]
+                for g_idx, group in enumerate(groups):
+                    cell = type_data[type_data['_Group_'] == group]['Value']
+                    if len(cell) > 0:
+                        m, s = cell.mean(), cell.sem()
+                        xpos = x[g_idx] + offset
+                        ax.hlines(m, xpos - width * 0.35, xpos + width * 0.35,
+                                 color='black', linewidth=1.5, zorder=5)
+                        ax.errorbar(xpos, m, yerr=s, color='black',
+                                   capsize=4, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)
         else:  # bar
             sns.barplot(data=plot_data, x='_Group_', y='Value', hue='_Type_',
                        ax=ax, palette=palette, order=groups, capsize=0.1)
