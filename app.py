@@ -35,6 +35,22 @@ from modules.report_generation import (
 st.set_page_config(page_title="Bile Acid Analysis Pipeline", page_icon="🧬", layout="wide")
 
 
+def df_to_excel_bytes(df, number_format='0.00'):
+    """Convert a DataFrame to Excel bytes with numeric cell formatting."""
+    from openpyxl.utils import get_column_letter
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='Sheet1', index=False)
+        ws = writer.sheets['Sheet1']
+        for col_idx, col_name in enumerate(df.columns, 1):
+            if pd.api.types.is_numeric_dtype(df[col_name]):
+                col_letter = get_column_letter(col_idx)
+                for row_idx in range(2, len(df) + 2):
+                    ws[f'{col_letter}{row_idx}'].number_format = number_format
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def init_session_state():
     """Initialize session state variables."""
     defaults = {
@@ -359,20 +375,16 @@ def create_results_zip(processed, results, figures, report_gen, settings=None):
     buf = BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         # Data files with metadata
-        for name, df in [('concentrations', processed.concentrations), 
+        for name, df in [('concentrations', processed.concentrations),
                          ('percentages', processed.percentages),
-                         ('totals', processed.totals), 
+                         ('totals', processed.totals),
                          ('ratios', processed.ratios)]:
-            csv_buf = BytesIO()
             export_df = pd.concat([metadata, df], axis=1)
-            export_df.to_csv(csv_buf, index=False)
-            zf.writestr(f'data/{name}.csv', csv_buf.getvalue())
-        
+            zf.writestr(f'data/{name}.xlsx', df_to_excel_bytes(export_df))
+
         # Full data
         full = pd.concat([processed.sample_data, processed.totals, processed.ratios, processed.percentages], axis=1)
-        csv_buf = BytesIO()
-        full.to_csv(csv_buf, index=False)
-        zf.writestr('data/full_analysis.csv', csv_buf.getvalue())
+        zf.writestr('data/full_analysis.xlsx', df_to_excel_bytes(full))
         
         # LOD-highlighted Excel
         lod_handling = settings.get('lod_handling', 'half_lod') if settings else 'half_lod'
@@ -1321,16 +1333,16 @@ def render_export_tab(processed, settings):
         metadata = processed.sample_data[id_cols] if id_cols else pd.DataFrame(index=processed.sample_data.index)
     
         # Export each dataset with metadata
-        for name, df in [("Concentrations", processed.concentrations), 
+        for name, df in [("Concentrations", processed.concentrations),
                      ("Totals", processed.totals),
-                     ("Ratios", processed.ratios), 
+                     ("Ratios", processed.ratios),
                      ("Percentages", processed.percentages)]:
             export_df = pd.concat([metadata, df], axis=1)
             st.download_button(
-                f"📥 {name} (CSV)", 
-                export_df.to_csv(index=False), 
-                f"bile_acid_{name.lower()}.csv", 
-                "text/csv",
+                f"📥 {name} (Excel)",
+                df_to_excel_bytes(export_df),
+                f"bile_acid_{name.lower()}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key=f"download_{name.lower()}"
             )
         
