@@ -893,7 +893,7 @@ def render_percentages_tab(processed, settings):
     fig_pie = viz.plot_composition_pie_charts(
         pie_df, comp_group_col, pct_cols,
         title='Bile Acid Pool Composition by Group',
-        top_n=10, other_threshold=2.0
+        top_n=7, other_threshold=2.0
     )
     st.pyplot(fig_pie)
     store_figure(fig_pie, 'percentages_pie')

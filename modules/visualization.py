@@ -835,7 +835,7 @@ class BileAcidVisualizer:
         pct_cols: List[str],
         title: Optional[str] = None,
         figsize: Optional[Tuple[float, float]] = None,
-        top_n: int = 10,
+        top_n: int = 7,
         other_threshold: float = 2.0
     ) -> plt.Figure:
         """
@@ -871,7 +871,7 @@ class BileAcidVisualizer:
         
         # Use a nice color palette
         all_bas = [col.replace('_pct', '') for col in pct_cols]
-        colors = sns.color_palette("husl", len(all_bas) + 1)
+        colors = get_group_palette(self.palette_name, len(all_bas) + 1)
         color_map = dict(zip(all_bas + ['Other'], colors))
         
         for idx, (group, ax) in enumerate(zip(groups, axes)):
