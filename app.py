@@ -878,22 +878,20 @@ def render_percentages_tab(processed, settings):
     st.markdown("#### Pool Composition - Pie Charts")
     st.caption("Visual breakdown of bile acid pool for each group (top contributors)")
 
-    all_pct_cols = percentages[pct_cols].mean().nlargest(15).index.tolist()
-
     if is_twoway:
         # Create combined group column for composition charts
         comp_group_col = '_factorial_group_'
         comp_data = data.copy()
         comp_data[comp_group_col] = comp_data[results.factor_a_col].astype(str) + ' - ' + comp_data[results.factor_b_col].astype(str)
         pie_df = pd.concat([comp_data[[comp_group_col]].reset_index(drop=True),
-                           percentages[all_pct_cols].reset_index(drop=True)], axis=1)
+                           percentages[pct_cols].reset_index(drop=True)], axis=1)
     else:
         comp_group_col = group_col
         pie_df = pd.concat([data[[group_col]].reset_index(drop=True),
-                           percentages[all_pct_cols].reset_index(drop=True)], axis=1)
-    
+                           percentages[pct_cols].reset_index(drop=True)], axis=1)
+
     fig_pie = viz.plot_composition_pie_charts(
-        pie_df, comp_group_col, all_pct_cols,
+        pie_df, comp_group_col, pct_cols,
         title='Bile Acid Pool Composition by Group',
         top_n=10, other_threshold=2.0
     )
@@ -909,7 +907,7 @@ def render_percentages_tab(processed, settings):
     st.caption("Side-by-side comparison of bile acid percentages across groups")
     
     fig_hbar = viz.plot_composition_horizontal_bars(
-        pie_df, comp_group_col, all_pct_cols,
+        pie_df, comp_group_col, pct_cols,
         title='Bile Acid Pool Composition Comparison',
         top_n=15, show_values=True
     )
@@ -925,7 +923,7 @@ def render_percentages_tab(processed, settings):
     st.caption("Full bile acid pool breakdown for each group")
     
     fig_stacked = viz.plot_composition_stacked_horizontal(
-        pie_df, comp_group_col, all_pct_cols,
+        pie_df, comp_group_col, pct_cols,
         title='Complete Bile Acid Pool Composition',
         top_n=12
     )
