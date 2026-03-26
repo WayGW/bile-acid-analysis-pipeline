@@ -869,10 +869,15 @@ class BileAcidVisualizer:
         if n_groups == 1:
             axes = [axes]
         
-        # Use a nice color palette
+        # Use a nice color palette - only need colors for displayed slices
         all_bas = [col.replace('_pct', '') for col in pct_cols]
-        colors = get_group_palette(self.palette_name, len(all_bas) + 1)
-        color_map = dict(zip(all_bas + ['Other'], colors))
+        # Determine which bile acids will actually appear as slices (top by overall mean)
+        overall_means = data[pct_cols].mean().sort_values(ascending=False)
+        top_bas = [col.replace('_pct', '') for col in overall_means.head(top_n).index]
+        n_colors = len(top_bas) + 1  # +1 for "Other"
+        palette_colors = get_group_palette(self.palette_name, n_colors)
+        color_map = dict(zip(top_bas, palette_colors[:len(top_bas)]))
+        color_map['Other'] = '#999999'
         
         for idx, (group, ax) in enumerate(zip(groups, axes)):
             group_data = data[data[group_col] == group][pct_cols].mean()
@@ -1087,7 +1092,7 @@ class BileAcidVisualizer:
         fig, ax = plt.subplots(figsize=figsize)
         
         # Colors
-        colors = sns.color_palette("husl", len(plot_bas))
+        colors = sns.color_palette("tab20", len(plot_bas))
         
         # Plot stacked horizontal bars
         y_pos = np.arange(n_groups)
