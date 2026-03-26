@@ -871,7 +871,7 @@ class BileAcidVisualizer:
         
         # Use a nice color palette
         all_bas = [col.replace('_pct', '') for col in pct_cols]
-        colors = plt.cm.tab20(np.linspace(0, 1, min(len(all_bas) + 1, 20)))
+        colors = sns.color_palette("husl", len(all_bas) + 1)
         color_map = dict(zip(all_bas + ['Other'], colors))
         
         for idx, (group, ax) in enumerate(zip(groups, axes)):
@@ -1087,7 +1087,7 @@ class BileAcidVisualizer:
         fig, ax = plt.subplots(figsize=figsize)
         
         # Colors
-        colors = plt.cm.tab20(np.linspace(0, 1, len(plot_bas)))
+        colors = sns.color_palette("husl", len(plot_bas))
         
         # Plot stacked horizontal bars
         y_pos = np.arange(n_groups)
