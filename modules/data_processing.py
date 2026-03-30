@@ -419,6 +419,32 @@ class BileAcidDataProcessor:
         xlsx = pd.ExcelFile(filepath, engine=engine)
         return xlsx.sheet_names
     
+    def get_selectable_sheets(self, filepath: Union[str, Path]) -> Tuple[List[str], str]:
+        """
+        Get sheets suitable for user selection (excludes LC-MS data sheet).
+
+        Returns:
+            Tuple of (selectable_sheet_names, auto_detected_best_sheet)
+        """
+        all_sheets = self.get_available_sheets(filepath)
+
+        # Identify the LC-MS data sheet to exclude
+        lcms_sheet = self._find_lcms_data_sheet(all_sheets)
+
+        # Filter out the LC-MS sheet
+        selectable = [s for s in all_sheets if s != lcms_sheet]
+
+        # If filtering removed everything, fall back to all sheets
+        if not selectable:
+            selectable = all_sheets
+
+        # Determine the auto-detected best sheet among selectable sheets
+        best_sheet = self._find_best_sheet(selectable)
+        if isinstance(best_sheet, int):
+            best_sheet = selectable[best_sheet] if best_sheet < len(selectable) else selectable[0]
+
+        return selectable, best_sheet
+
     def detect_structure(self, df: pd.DataFrame) -> DataStructureInfo:
         """
         Auto-detect the structure of the data file.

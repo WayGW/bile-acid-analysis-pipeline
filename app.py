@@ -62,7 +62,8 @@ def init_session_state():
         'last_file': None,
         'last_settings': None,  # Track settings that affect data/stats
         'zip_data': None,  # Cached ZIP bytes for download
-        'zip_figure_count': 0  # Number of figures in cached ZIP
+        'zip_figure_count': 0,  # Number of figures in cached ZIP
+        'selected_sheet': None  # User-selected data sheet
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -1419,24 +1420,59 @@ def main():
             st.session_state.zip_figure_count = 0
             st.session_state.last_file = uploaded.name
             st.session_state.last_settings = None  # Reset settings tracking for new file
-        
+            st.session_state.selected_sheet = None  # Reset sheet selection for new file
+
+        # Write temp file for sheet inspection and processing
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded.name).suffix) as tmp:
+            tmp.write(uploaded.getvalue())
+            tmp_path = tmp.name
+
+        # Sheet selection dropdown
+        processor = BileAcidDataProcessor(lod_handling=settings['lod_handling'])
+        try:
+            selectable_sheets, auto_detected_sheet = processor.get_selectable_sheets(tmp_path)
+        except Exception as e:
+            st.error(f"Error reading file: {e}")
+            return
+
+        if len(selectable_sheets) > 1:
+            # Determine default: use previous selection if still valid, otherwise auto-detected
+            if st.session_state.selected_sheet in selectable_sheets:
+                default_idx = selectable_sheets.index(st.session_state.selected_sheet)
+            else:
+                default_idx = selectable_sheets.index(auto_detected_sheet)
+
+            selected_sheet = st.selectbox(
+                "Select data sheet",
+                selectable_sheets,
+                index=default_idx,
+                help="Choose which sheet contains your sample data. The LC-MS data sheet (standard curves) is excluded."
+            )
+        else:
+            selected_sheet = selectable_sheets[0] if selectable_sheets else None
+
+        # Detect sheet change
+        sheet_changed = (st.session_state.selected_sheet != selected_sheet)
+        if sheet_changed:
+            st.session_state.selected_sheet = selected_sheet
+            st.session_state.stats_computed = False
+            st.session_state.figures = {}
+            st.session_state.zip_data = None
+            st.session_state.zip_figure_count = 0
+
         # Check if settings changed (LOD handling, alpha, etc.)
         settings_changed = check_settings_changed(settings)
         if settings_changed:
             st.toast("Settings changed — reprocessing data...")
-        
-        # Reprocess data if file or settings changed
-        if file_changed or settings_changed or st.session_state.processed_data is None:
+
+        # Reprocess data if file, sheet, or settings changed
+        if file_changed or sheet_changed or settings_changed or st.session_state.processed_data is None:
             with st.status("Processing data...", expanded=True) as status:
-                st.write("Reading file...")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded.name).suffix) as tmp:
-                    tmp.write(uploaded.getvalue())
-                    tmp_path = tmp.name
+                st.write(f"Reading sheet: **{selected_sheet}**...")
 
                 try:
                     st.write("Detecting structure & applying LOD handling...")
-                    processor = BileAcidDataProcessor(lod_handling=settings['lod_handling'])
-                    processed = processor.load_and_process(tmp_path)
+                    processed = processor.load_and_process(tmp_path, sheet_name=selected_sheet)
                     st.session_state.processed_data = processed
                     status.update(label="Data processed!", state="complete", expanded=False)
                 except Exception as e:
