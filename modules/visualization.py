@@ -914,7 +914,7 @@ class BileAcidVisualizer:
             
             # Style the percentage labels
             for autotext in autotexts:
-                autotext.set_fontsize(8)
+                autotext.set_fontsize(10)
                 autotext.set_fontweight('bold')
             
             ax.set_title(f'{group}', fontsize=12, fontweight='bold')
