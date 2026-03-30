@@ -888,8 +888,9 @@ class BileAcidVisualizer:
             # Sort by value and handle small slices
             group_data = group_data.sort_values(ascending=False)
             
-            # Group small values into "Other"
-            main_slices = group_data[group_data >= other_threshold].head(top_n)
+            # Only keep bile acids that are in the global top list
+            main_slices = group_data[top_bas].sort_values(ascending=False)
+            main_slices = main_slices[main_slices >= other_threshold]
             other_value = group_data.sum() - main_slices.sum()
             
             if other_value > 0.1:  # Only add "Other" if meaningful
@@ -924,8 +925,8 @@ class BileAcidVisualizer:
         for group in groups:
             group_data = data[data[group_col] == group][pct_cols].mean()
             group_data.index = [col.replace('_pct', '') for col in group_data.index]
-            group_data = group_data.sort_values(ascending=False)
-            main_slices = group_data[group_data >= other_threshold].head(top_n)
+            main_slices = group_data[top_bas].sort_values(ascending=False)
+            main_slices = main_slices[main_slices >= other_threshold]
             all_labels.update(main_slices.index.tolist())
         
         # Sort labels by overall mean
