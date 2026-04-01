@@ -27,7 +27,8 @@ from config.bile_acid_species import (
     BILE_ACID_PANEL, ANALYSIS_GROUPS, CLINICAL_RATIOS,
     get_glycine_conjugated, get_taurine_conjugated,
     get_primary, get_secondary, get_conjugated, get_unconjugated,
-    get_sulfated
+    get_sulfated, get_keto_derivatives, get_iso_forms, get_nor_bile_acids,
+    get_12alpha_hydroxylated, get_non12alpha_hydroxylated
 )
 from modules.statistical_tests import (
     StatisticalAnalyzer, FullAnalysisResult,
@@ -229,6 +230,42 @@ class ExcelReportGenerator:
         'Total_Secondary': {
             'description': 'Secondary bile acids (bacterial modification)',
             'get_columns': lambda available: [c for c in get_secondary() if c in available],
+        },
+        'Oxidized_Keto': {
+            'description': 'Oxidized (keto) bile acids',
+            'get_columns': lambda available: [c for c in get_keto_derivatives() if c in available],
+        },
+        'Epimerized_Iso': {
+            'description': 'Epimerized (iso/allo) bile acids',
+            'get_columns': lambda available: [c for c in get_iso_forms() if c in available],
+        },
+        'Nor_Bile_Acids': {
+            'description': 'Nor bile acids (side-chain shortened)',
+            'get_columns': lambda available: [c for c in get_nor_bile_acids() if c in available],
+        },
+        '12alpha_Hydroxylated': {
+            'description': '12-alpha hydroxylated bile acids (CYP8B1-dependent)',
+            'get_columns': lambda available: [c for c in get_12alpha_hydroxylated() if c in available],
+        },
+        'Non_12alpha_Hydroxylated': {
+            'description': 'Non-12-alpha hydroxylated bile acids',
+            'get_columns': lambda available: [c for c in get_non12alpha_hydroxylated() if c in available],
+        },
+        'Primary_Conjugated': {
+            'description': 'Primary conjugated bile acids',
+            'get_columns': lambda available: [c for c in get_primary() if c in available and c in get_conjugated()],
+        },
+        'Primary_Unconjugated': {
+            'description': 'Primary unconjugated bile acids',
+            'get_columns': lambda available: [c for c in get_primary() if c in available and c in get_unconjugated()],
+        },
+        'Secondary_Conjugated': {
+            'description': 'Secondary conjugated bile acids',
+            'get_columns': lambda available: [c for c in get_secondary() if c in available and c in get_conjugated()],
+        },
+        'Secondary_Unconjugated': {
+            'description': 'Secondary unconjugated bile acids',
+            'get_columns': lambda available: [c for c in get_secondary() if c in available and c in get_unconjugated()],
         },
     }
     

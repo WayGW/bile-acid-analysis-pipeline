@@ -15,7 +15,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.gridspec as gridspec
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.cm import ScalarMappable
 import seaborn as sns
 from typing import Dict, List, Optional, Tuple, Union
 from pathlib import Path
@@ -32,7 +34,7 @@ plt.rcParams.update({
     'ytick.labelsize': 9,
     'legend.fontsize': 9,
     'figure.dpi': 150,
-    'savefig.dpi': 300,
+    'savefig.dpi': 600,
     'savefig.bbox': 'tight',
     'axes.spines.top': False,
     'axes.spines.right': False,
@@ -948,7 +950,177 @@ class BileAcidVisualizer:
         
         plt.tight_layout()
         return fig
-    
+
+    def plot_category_composition_pie_charts(
+        self,
+        data: pd.DataFrame,
+        group_col: str,
+        bile_acid_cols: List[str],
+        title: Optional[str] = None,
+        figsize: Optional[Tuple[float, float]] = None,
+        other_threshold: float = 2.0
+    ) -> plt.Figure:
+        """
+        Create pie charts showing within-category bile acid composition.
+
+        One pie chart per category (primary conjugated, primary unconjugated,
+        secondary conjugated, secondary unconjugated, oxidized, epimerized,
+        sulfated, nor bile acids), with slices showing individual bile acid
+        percentages within that category.
+
+        Args:
+            data: DataFrame with group column and bile acid concentration columns
+            group_col: Column name for grouping
+            bile_acid_cols: List of bile acid column names
+            title: Overall figure title
+            figsize: Figure size (auto-calculated if None)
+            other_threshold: Minimum percentage to show individually
+        """
+        from config.bile_acid_species import (
+            BILE_ACID_PANEL, get_primary, get_secondary,
+            get_conjugated, get_unconjugated,
+            get_keto_derivatives, get_iso_forms, get_nor_bile_acids,
+            get_sulfated
+        )
+
+        # Define the 8 categories with their member species
+        available = set(bile_acid_cols) & set(data.columns)
+        conjugated = set(get_conjugated())
+        unconjugated = set(get_unconjugated())
+
+        categories = {
+            'Primary Conjugated': [s for s in get_primary() if s in conjugated and s in available],
+            'Primary Unconjugated': [s for s in get_primary() if s in unconjugated and s in available],
+            'Secondary Conjugated': [s for s in get_secondary() if s in conjugated and s in available],
+            'Secondary Unconjugated': [s for s in get_secondary() if s in unconjugated and s in available],
+            'Oxidized': [s for s in get_keto_derivatives() if s in available],
+            'Epimerized': [s for s in get_iso_forms() if s in available],
+            'Sulfated': [s for s in get_sulfated() if s in available],
+            'Nor Bile Acids': [s for s in get_nor_bile_acids() if s in available],
+        }
+
+        # Filter out empty categories
+        categories = {k: v for k, v in categories.items() if v}
+
+        # Filter NaN groups
+        data = data.copy()
+        data = data[data[group_col].notna()]
+        data = data[data[group_col].astype(str).str.lower() != 'nan']
+
+        groups = data[group_col].unique().tolist()
+        n_groups = len(groups)
+        n_categories = len(categories)
+
+        if n_categories == 0:
+            fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+            ax.text(0.5, 0.5, 'No category data available', ha='center', va='center')
+            return fig
+
+        # Layout: rows = groups, cols = categories
+        if figsize is None:
+            figsize = (5 * n_categories, 5.5 * n_groups)
+
+        fig, axes = plt.subplots(n_groups, n_categories, figsize=figsize, squeeze=False,
+                                 dpi=600)
+        fig.subplots_adjust(hspace=0.4, wspace=0.3)
+
+        # Color palette for individual bile acids
+        all_bas = set()
+        for species_list in categories.values():
+            all_bas.update(species_list)
+        n_colors = max(len(all_bas), 10)
+        palette_colors = get_group_palette('tab20', n_colors)
+        ba_color_map = dict(zip(sorted(all_bas), palette_colors[:len(all_bas)]))
+        ba_color_map['Other'] = '#999999'
+
+        category_names = list(categories.keys())
+
+        for row_idx, group in enumerate(groups):
+            group_data = data[data[group_col] == group]
+
+            for col_idx, cat_name in enumerate(category_names):
+                ax = axes[row_idx, col_idx]
+                species_list = categories[cat_name]
+
+                # Mean concentration per BA in this category for this group
+                means = group_data[species_list].mean()
+                cat_total = means.sum()
+
+                if cat_total <= 0:
+                    ax.text(0.5, 0.5, 'N/A', ha='center', va='center', fontsize=10)
+                    ax.set_title(f'{cat_name}', fontsize=10, fontweight='bold')
+                    if col_idx == 0:
+                        ax.set_ylabel(f'{group}', fontsize=11, fontweight='bold')
+                    continue
+
+                # Convert to percentages within this category
+                pcts = (means / cat_total * 100).sort_values(ascending=False)
+
+                # Group small slices into "Other"
+                main_slices = pcts[pcts >= other_threshold]
+                other_value = pcts[pcts < other_threshold].sum()
+
+                if other_value > 0.1:
+                    plot_data = pd.concat([main_slices, pd.Series({'Other': other_value})])
+                else:
+                    plot_data = main_slices
+
+                pie_colors = [ba_color_map.get(ba, '#999999') for ba in plot_data.index]
+
+                wedges, texts, autotexts = ax.pie(
+                    plot_data.values,
+                    labels=None,
+                    autopct=lambda pct: f'{pct:.1f}%' if pct >= 3 else '',
+                    colors=pie_colors,
+                    pctdistance=0.75,
+                    startangle=90,
+                    wedgeprops={'edgecolor': 'white', 'linewidth': 1}
+                )
+
+                for autotext in autotexts:
+                    autotext.set_fontsize(13)
+                    autotext.set_fontweight('bold')
+
+                # Column header (category name) on top row
+                if row_idx == 0:
+                    ax.set_title(f'{cat_name}', fontsize=15, fontweight='bold', pad=10)
+
+                # Row label (group name) on left column
+                if col_idx == 0:
+                    ax.set_ylabel(f'{group}', fontsize=15, fontweight='bold', labelpad=15)
+
+        # Build per-category legends
+        for col_idx, cat_name in enumerate(category_names):
+            species_list = categories[cat_name]
+            # Collect all displayed BAs across groups for this category
+            displayed_bas = set()
+            for group in groups:
+                group_data = data[data[group_col] == group]
+                means = group_data[species_list].mean()
+                cat_total = means.sum()
+                if cat_total > 0:
+                    pcts = (means / cat_total * 100)
+                    displayed_bas.update(pcts[pcts >= other_threshold].index.tolist())
+
+            sorted_bas = sorted(displayed_bas, key=lambda x: x)
+            legend_items = [mpatches.Patch(color=ba_color_map.get(ba, '#999999'), label=ba)
+                           for ba in sorted_bas]
+            if any(data[data[group_col] == g][species_list].mean().sum() > 0 for g in groups):
+                legend_items.append(mpatches.Patch(color='#999999', label='Other'))
+
+            # Place legend below the bottom subplot of each column
+            axes[-1, col_idx].legend(
+                handles=legend_items, loc='upper center',
+                bbox_to_anchor=(0.5, -0.08), fontsize=11, ncol=2,
+                frameon=True, fancybox=True
+            )
+
+        if title:
+            fig.suptitle(title, fontsize=18, fontweight='bold', y=1.02)
+
+        plt.tight_layout()
+        return fig
+
     def plot_composition_horizontal_bars(
         self,
         data: pd.DataFrame,
@@ -1188,7 +1360,7 @@ class BileAcidVisualizer:
                        ax=ax, palette=palette_dict, order=a_levels, hue_order=b_levels)
             if show_points:
                 sns.stripplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
-                             ax=ax, dodge=True, color='black', alpha=0.6, size=4,
+                             ax=ax, dodge=True, palette='dark:black', alpha=0.6, size=4,
                              order=a_levels, hue_order=b_levels, legend=False,
                              jitter=0.15, zorder=10, edgecolor='white', linewidth=0.3)
         elif plot_type == "violin":
@@ -1197,7 +1369,7 @@ class BileAcidVisualizer:
                           inner=None)
             if show_points:
                 sns.stripplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
-                             ax=ax, dodge=True, color='black', alpha=0.6, size=4,
+                             ax=ax, dodge=True, palette='dark:black', alpha=0.6, size=4,
                              order=a_levels, hue_order=b_levels, legend=False,
                              jitter=0.15, zorder=10, edgecolor='white', linewidth=0.3)
         elif plot_type == "strip":
@@ -1577,110 +1749,309 @@ class BileAcidVisualizer:
         plt.tight_layout()
         return fig
 
+    def plot_faceted_heatmap(
+        self,
+        sample_data: pd.DataFrame,
+        totals: pd.DataFrame,
+        group_col: str,
+        selected_categories: Dict[str, List[str]],
+        category_display_names: Dict[str, str],
+        normalization: str = "zscore",
+        cmap: str = "RdBu_r",
+        cell_size: float = 0.18,
+        sample_id_col: Optional[str] = None,
+        factor_cols: Optional[Dict[str, str]] = None,
+    ) -> plt.Figure:
+        """
+        Create a faceted heatmap showing bile acid expression across samples.
+
+        Layout: [Category Totals | gap | Category1 BAs | gap | Category2 BAs | ...]
+        Rows are samples sorted by experimental group with separators.
+
+        Args:
+            sample_data: DataFrame with group column and BA concentration columns
+            totals: DataFrame with category total columns (from calculate_totals)
+            group_col: Column name for grouping
+            selected_categories: Dict mapping category key -> list of constituent BAs
+            category_display_names: Dict mapping category key -> display name
+            normalization: "zscore" (per column), "row" (per row), or "none"
+            cmap: Matplotlib colormap name
+            cell_size: Size in inches per cell (controls both width and height for square cells)
+        """
+        # Filter and sort by all factor columns (cluster by group combinations)
+        data = sample_data.copy()
+        data = data[data[group_col].notna()]
+        data = data[data[group_col].astype(str).str.lower() != 'nan']
+
+        # Sort by all factor columns if available, else just group_col
+        sort_cols = []
+        if factor_cols:
+            for col_name in factor_cols.values():
+                if col_name in data.columns:
+                    sort_cols.append(col_name)
+        if not sort_cols:
+            sort_cols = [group_col]
+        data = data.sort_values(sort_cols, key=lambda x: x.astype(str))
+        sorted_idx = data.index  # original indices in sorted order
+        data = data.reset_index(drop=True)
+        totals = totals.loc[sorted_idx].reset_index(drop=True)
+
+        groups = data[group_col].values
+        n_samples = len(data)
+
+        # Build facet data: list of (title, DataFrame)
+        # is_metadata flags track which facets use qualitative colormap
+        facets = []
+        is_metadata = []
+
+        # Facet 0: Metadata (factor columns) — each factor gets its own color palette
+        from matplotlib.colors import ListedColormap
+        from matplotlib.patches import Patch
+        meta_df = pd.DataFrame(index=data.index)
+        meta_labels = {}  # {display_name: {int_code: original_label}}
+        meta_col_colors = {}  # {display_name: {int_code: rgba_color}}
+        # Use distinct palettes per factor so colors don't overlap
+        factor_palettes = [plt.cm.Set2, plt.cm.Set1, plt.cm.tab10, plt.cm.Pastel1]
+        if factor_cols:
+            for f_idx, (display_name, col_name) in enumerate(factor_cols.items()):
+                if col_name in data.columns:
+                    clean_name = display_name.replace('Factor_', '') if display_name.startswith('Factor_') else display_name
+                    levels = sorted(data[col_name].astype(str).unique())
+                    level_map = {level: i for i, level in enumerate(levels)}
+                    meta_df[clean_name] = data[col_name].astype(str).map(level_map)
+                    meta_labels[clean_name] = {i: level for level, i in level_map.items()}
+                    # Assign distinct palette per factor
+                    palette = factor_palettes[f_idx % len(factor_palettes)]
+                    colors = palette(np.linspace(0, 0.7, max(len(levels), 2)))[:, :3]
+                    meta_col_colors[clean_name] = {i: colors[i] for i in range(len(levels))}
+        if not meta_df.empty:
+            facets.append(("Groups", meta_df))
+            is_metadata.append(True)
+
+        # Category totals facet
+        total_cols = {}
+        for cat_key in selected_categories:
+            display = category_display_names.get(cat_key, cat_key)
+            if cat_key in totals.columns:
+                total_cols[display] = totals[cat_key].values
+        if total_cols:
+            facets.append(("Category Totals", pd.DataFrame(total_cols, index=data.index)))
+            is_metadata.append(False)
+
+        # Constituent BAs per category
+        for cat_key, ba_list in selected_categories.items():
+            available_bas = [ba for ba in ba_list if ba in data.columns]
+            if available_bas:
+                display = category_display_names.get(cat_key, cat_key)
+                facets.append((display, data[available_bas].copy()))
+                is_metadata.append(False)
+
+        if not facets:
+            fig, ax = plt.subplots(1, 1, figsize=(6, 4))
+            ax.text(0.5, 0.5, 'No data available for selected categories',
+                    ha='center', va='center', fontsize=12)
+            ax.set_axis_off()
+            return fig
+
+        # Normalize each facet
+        def normalize_df(df):
+            df = df.copy().astype(float)
+            if normalization == "zscore":
+                for col in df.columns:
+                    std = df[col].std()
+                    if std < 1e-10:
+                        df[col] = 0.0
+                    else:
+                        df[col] = (df[col] - df[col].mean()) / std
+            elif normalization == "row":
+                row_sums = df.sum(axis=1)
+                row_sums = row_sums.replace(0, 1)
+                df = df.div(row_sums, axis=0) * 100
+            return df
+
+        # Normalize data facets only (skip metadata facet)
+        normalized_facets = []
+        for (title, df), is_meta in zip(facets, is_metadata):
+            if is_meta:
+                normalized_facets.append((title, df))  # keep integer-encoded as-is
+            else:
+                normalized_facets.append((title, normalize_df(df)))
+
+        # Compute GridSpec layout
+        # Width ratios: proportional to column count, with gap columns between
+        width_ratios = []
+        facet_indices = []  # track which GridSpec columns are data vs gaps
+        for i, (title, df) in enumerate(normalized_facets):
+            if i > 0:
+                width_ratios.append(0.2)  # gap
+                facet_indices.append(None)
+            width_ratios.append(max(df.shape[1], 1))
+            facet_indices.append(i)
+
+        # Calculate figure size for square cells
+        # width_ratios includes gap columns (0.3 units each) and data columns (n_cols units each)
+        total_width_units = sum(width_ratios)
+        # Margins from subplots_adjust: left=0.08, right=0.91, top=0.94, bottom=0.12
+        usable_width_frac = 0.83   # right - left
+        usable_height_frac = 0.82  # top - bottom
+        fig_width = (total_width_units * cell_size) / usable_width_frac
+        fig_height = (n_samples * cell_size) / usable_height_frac
+
+        fig = plt.figure(figsize=(fig_width, fig_height), dpi=150)
+        gs = gridspec.GridSpec(1, len(width_ratios), width_ratios=width_ratios, wspace=0.08)
+
+        # Determine color range
+        if normalization == "zscore":
+            vmin, vmax = -2.5, 2.5
+            center = 0
+            cbar_label = "Z-score"
+        elif normalization == "row":
+            all_vals = pd.concat([df for _, df in normalized_facets], axis=1)
+            vmin, vmax = 0, all_vals.max().max()
+            center = None
+            cbar_label = "% of row"
+        else:
+            all_vals = pd.concat([df for _, df in normalized_facets], axis=1)
+            vmin, vmax = all_vals.min().min(), all_vals.max().max()
+            center = None
+            cbar_label = "Concentration"
+
+        # Find group boundaries for horizontal separators
+        group_boundaries = []
+        group_labels = []
+        prev_group = groups[0]
+        start_idx = 0
+        for i, g in enumerate(groups):
+            if g != prev_group:
+                group_boundaries.append(i)
+                group_labels.append((start_idx, i, str(prev_group)))
+                start_idx = i
+                prev_group = g
+        group_labels.append((start_idx, n_samples, str(prev_group)))
+
+        # Build y-axis labels from sample IDs if available
+        if sample_id_col and sample_id_col in data.columns:
+            y_labels = data[sample_id_col].astype(str).tolist()
+        else:
+            y_labels = [f"S{i+1}" for i in range(n_samples)]
+
+        # Render facets
+        facet_axes = []
+        gs_col = 0
+        for i, ((title, df), is_meta) in enumerate(zip(normalized_facets, is_metadata)):
+            if i > 0:
+                # Gap column - invisible
+                gap_ax = fig.add_subplot(gs[0, gs_col])
+                gap_ax.set_visible(False)
+                gs_col += 1
+
+            ax = fig.add_subplot(gs[0, gs_col])
+            facet_axes.append(ax)
+
+            if is_meta:
+                # Metadata facet: render each column with its own color palette
+                n_rows, n_meta_cols = df.shape
+                rgb_image = np.ones((n_rows, n_meta_cols, 3))
+                for col_idx, col_name in enumerate(df.columns):
+                    col_colors = meta_col_colors.get(col_name, {})
+                    for row_idx in range(n_rows):
+                        int_val = int(df.iloc[row_idx, col_idx])
+                        if int_val in col_colors:
+                            rgb_image[row_idx, col_idx, :] = col_colors[int_val]
+
+                # Use pcolormesh per column for clean cell edges
+                for col_idx, col_name in enumerate(df.columns):
+                    col_colors_map = meta_col_colors.get(col_name, {})
+                    col_rgb = np.array([col_colors_map.get(int(df.iloc[r, col_idx]), (0.5, 0.5, 0.5))
+                                        for r in range(n_rows)])
+                    for r in range(n_rows):
+                        ax.add_patch(plt.Rectangle(
+                            (col_idx, r), 1, 1,
+                            facecolor=col_rgb[r], edgecolor='white', linewidth=0.5
+                        ))
+                ax.set_xlim(0, n_meta_cols)
+                ax.set_ylim(n_rows, 0)
+                ax.set_xticks([c + 0.5 for c in range(n_meta_cols)])
+                ax.set_xticklabels(df.columns.tolist())
+                ax.set_yticks([r + 0.5 for r in range(n_rows)])
+                ax.set_yticklabels(y_labels)
+            else:
+                # Data facet: diverging/sequential colormap
+                sns.heatmap(
+                    df.values,
+                    ax=ax,
+                    cmap=cmap,
+                    vmin=vmin, vmax=vmax,
+                    center=center,
+                    cbar=False,
+                    xticklabels=df.columns.tolist(),
+                    yticklabels=False,
+                    linewidths=0.5,
+                    linecolor='white',
+                )
+
+            # Title
+            ax.set_title(title, fontsize=5, fontweight='bold', pad=2)
+
+            # X-axis label rotation
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', fontsize=4)
+
+            # Y-axis
+            if i == 0:
+                ax.set_yticklabels(ax.get_yticklabels(), fontsize=4, rotation=0)
+            ax.set_ylabel('')
+            ax.set_xlabel('')
+
+            gs_col += 1
+
+        # Add legend for metadata factor levels
+        legend_handles = []
+        for col_name, level_labels in meta_labels.items():
+            col_colors = meta_col_colors.get(col_name, {})
+            for int_code, label in sorted(level_labels.items()):
+                color = col_colors.get(int_code, (0.5, 0.5, 0.5))
+                legend_handles.append(Patch(facecolor=color, label=f"{col_name}: {label}"))
+        if legend_handles:
+            fig.legend(
+                handles=legend_handles,
+                loc='upper right',
+                bbox_to_anchor=(0.98, 0.99),
+                fontsize=4,
+                frameon=True,
+                framealpha=0.9,
+                edgecolor='gray',
+                handlelength=1.0,
+                handleheight=0.7,
+                title='Groups',
+                title_fontsize=3.5,
+            )
+
+        # Shared colorbar
+        cbar_ax = fig.add_axes([0.93, 0.15, 0.012, 0.7])
+        norm = Normalize(vmin=vmin, vmax=vmax)
+        sm = ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.set_label(cbar_label, fontsize=5)
+        cbar_ax.tick_params(labelsize=3)
+
+        fig.subplots_adjust(left=0.08, right=0.91, top=0.94, bottom=0.12)
+        return fig
+
     def save_figure(
         self,
         fig: plt.Figure,
         filepath: Union[str, Path],
         formats: List[str] = ['png', 'pdf'],
-        dpi: int = 300
+        dpi: int = 600
     ):
         """Save figure in multiple formats."""
         filepath = Path(filepath)
-        
+
         for fmt in formats:
             save_path = filepath.with_suffix(f'.{fmt}')
             fig.savefig(save_path, format=fmt, dpi=dpi, bbox_inches='tight')
 
-
-def create_summary_figure(
-    data: pd.DataFrame,
-    bile_acid_cols: List[str],
-    group_col: str,
-    totals: pd.DataFrame,
-    output_path: Optional[Path] = None
-) -> plt.Figure:
-    """Create a comprehensive summary figure with multiple panels."""
-    fig = plt.figure(figsize=(16, 12))
-    
-    gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
-    
-    # 1. Total bile acids by group
-    ax1 = fig.add_subplot(gs[0, 0])
-    combined = pd.concat([data[[group_col]], totals], axis=1)
-    if 'total_all' in combined.columns:
-        sns.boxplot(data=combined, x=group_col, y='total_all', ax=ax1)
-        ax1.set_title('Total Bile Acids')
-        ax1.set_ylabel('Concentration (nmol/L)')
-    
-    # 2. Primary vs Secondary
-    ax2 = fig.add_subplot(gs[0, 1])
-    if 'total_primary' in totals.columns and 'total_secondary' in totals.columns:
-        plot_data = pd.DataFrame({
-            'Primary': totals['total_primary'],
-            'Secondary': totals['total_secondary'],
-            'Group': data[group_col]
-        }).melt(id_vars='Group', var_name='Type', value_name='Concentration')
-        sns.barplot(data=plot_data, x='Group', y='Concentration', hue='Type', ax=ax2)
-        ax2.set_title('Primary vs Secondary')
-        ax2.legend(title='')
-    
-    # 3. Conjugated vs Unconjugated
-    ax3 = fig.add_subplot(gs[0, 2])
-    if 'total_conjugated' in totals.columns and 'total_unconjugated' in totals.columns:
-        plot_data = pd.DataFrame({
-            'Conjugated': totals['total_conjugated'],
-            'Unconjugated': totals['total_unconjugated'],
-            'Group': data[group_col]
-        }).melt(id_vars='Group', var_name='Type', value_name='Concentration')
-        sns.barplot(data=plot_data, x='Group', y='Concentration', hue='Type', ax=ax3)
-        ax3.set_title('Conjugated vs Unconjugated')
-        ax3.legend(title='')
-    
-    # 4. Glycine vs Taurine
-    ax4 = fig.add_subplot(gs[1, 0])
-    if 'glycine_conjugated' in totals.columns and 'taurine_conjugated' in totals.columns:
-        plot_data = pd.DataFrame({
-            'Glycine': totals['glycine_conjugated'],
-            'Taurine': totals['taurine_conjugated'],
-            'Group': data[group_col]
-        }).melt(id_vars='Group', var_name='Conjugation', value_name='Concentration')
-        sns.barplot(data=plot_data, x='Group', y='Concentration', hue='Conjugation', ax=ax4)
-        ax4.set_title('Glycine vs Taurine Conjugation')
-        ax4.legend(title='')
-    
-    # 5. Composition stacked bar
-    ax5 = fig.add_subplot(gs[1, 1:])
-    available_cols = [c for c in bile_acid_cols if c in data.columns][:15]
-    if available_cols:
-        group_means = data.groupby(group_col)[available_cols].mean()
-        row_sums = group_means.sum(axis=1)
-        pct_data = group_means.div(row_sums, axis=0) * 100
-        pct_data.plot(kind='bar', stacked=True, ax=ax5, 
-                     colormap='tab20', edgecolor='white', linewidth=0.3)
-        ax5.set_title('Bile Acid Composition (%)')
-        ax5.set_ylabel('Percentage')
-        ax5.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=7)
-        ax5.set_xticklabels(ax5.get_xticklabels(), rotation=45, ha='right')
-    
-    # 6. Top individual BAs
-    ax6 = fig.add_subplot(gs[2, :])
-    top_bas = data[available_cols].mean().nlargest(8).index.tolist()
-    if top_bas:
-        plot_data = data[[group_col] + top_bas].melt(
-            id_vars=group_col, var_name='Bile Acid', value_name='Concentration'
-        )
-        sns.boxplot(data=plot_data, x='Bile Acid', y='Concentration', 
-                   hue=group_col, ax=ax6)
-        ax6.set_title('Top 8 Most Abundant Bile Acids')
-        ax6.set_xticklabels(ax6.get_xticklabels(), rotation=45, ha='right')
-        ax6.legend(title='Group')
-    
-    plt.suptitle('Bile Acid Analysis Summary', fontsize=14, fontweight='bold', y=1.02)
-    
-    if output_path:
-        fig.savefig(output_path, dpi=300, bbox_inches='tight')
-    
-    return fig
 
 
 if __name__ == "__main__":

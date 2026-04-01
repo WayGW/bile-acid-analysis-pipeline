@@ -785,10 +785,12 @@ class BileAcidDataProcessor:
                     old_to_new[old_idx] = new_idx
                     new_idx += 1
             
-            # Update lod_rows to use new indices
+            # Update lod_rows to use new indices and recount
             for col in lod_rows:
                 lod_rows[col] = [old_to_new[i] for i in lod_rows[col] if i in old_to_new]
+                lod_counts[col] = len(lod_rows[col])
             structure.analyte_lod_rows = lod_rows
+            structure.analyte_lod_counts = lod_counts
             
             df = df[valid_mask].reset_index(drop=True)
         

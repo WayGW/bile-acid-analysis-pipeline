@@ -814,24 +814,47 @@ class StatisticalAnalyzer:
         Returns:
             FullAnalysisResult with all analysis components
         """
+        # Skip analysis if data has near-zero variance (e.g. all LOD-replaced)
+        clean = data[[value_col, group_col]].dropna().copy()
+        clean[value_col] = pd.to_numeric(clean[value_col], errors='coerce')
+        clean = clean.dropna()
+        if clean[value_col].std() < 1e-10:
+            assumptions = AssumptionResults(
+                recommendation_reason="Skipped: near-zero variance (all values identical, e.g. LOD-replaced)"
+            )
+            main_result = StatisticalResult(
+                test_type=TestType.MANN_WHITNEY,
+                statistic=np.nan,
+                pvalue=np.nan,
+                groups_compared=clean[group_col].unique().tolist(),
+                alpha=self.alpha
+            )
+            descriptives = self.get_descriptive_stats(data, value_col, group_col)
+            return FullAnalysisResult(
+                variable_name=value_col,
+                assumptions=assumptions,
+                main_test=main_result,
+                descriptive_stats=descriptives
+            )
+
         # Check assumptions
         assumptions = self.check_assumptions(data, value_col, group_col)
-        
+
         # Run main test
         main_result = self.run_test(
-            data, value_col, group_col, 
+            data, value_col, group_col,
             assumptions.recommended_test
         )
-        
+
         # Descriptive stats
         descriptives = self.get_descriptive_stats(data, value_col, group_col)
-        
+
         # Post-hoc if needed
         posthoc = None
         n_groups = len(data[group_col].unique())
         if run_posthoc and n_groups > 2 and main_result.significant:
             posthoc = self.run_posthoc(data, value_col, group_col, assumptions)
-        
+
         return FullAnalysisResult(
             variable_name=value_col,
             assumptions=assumptions,
@@ -871,6 +894,24 @@ class StatisticalAnalyzer:
         # Ensure factors are categorical strings
         df[factor_a_col] = df[factor_a_col].astype(str).str.strip()
         df[factor_b_col] = df[factor_b_col].astype(str).str.strip()
+
+        # Skip analysis if data has near-zero variance (e.g. all LOD-replaced)
+        if df[value_col].std() < 1e-10:
+            skip_result = TwoWayResult(
+                test_type=TestType.ANOVA_TWOWAY,
+                factor_a_name=fa_name,
+                factor_b_name=fb_name,
+                alpha=self.alpha
+            )
+            descriptives = self._get_twoway_descriptive_stats(
+                df, value_col, factor_a_col, factor_b_col
+            )
+            return FullTwoWayAnalysisResult(
+                variable_name=value_col,
+                twoway_result=skip_result,
+                descriptive_stats=descriptives,
+                assumption_notes="Skipped: near-zero variance (all values identical, e.g. LOD-replaced)"
+            )
 
         # Check assumptions and select test
         use_parametric, assumption_notes = self._recommend_twoway_test(

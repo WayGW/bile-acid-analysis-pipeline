@@ -20,12 +20,15 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config.bile_acid_species import (
-    BILE_ACID_PANEL, get_glycine_conjugated, get_taurine_conjugated,
-    get_primary, get_secondary, get_conjugated, get_unconjugated
+    BILE_ACID_PANEL, ANALYSIS_GROUPS, ANALYSIS_GROUP_DISPLAY_NAMES,
+    get_glycine_conjugated, get_taurine_conjugated,
+    get_primary, get_secondary, get_conjugated, get_unconjugated,
+    get_keto_derivatives, get_iso_forms, get_nor_bile_acids,
+    get_12alpha_hydroxylated, get_non12alpha_hydroxylated, get_sulfated
 )
 from modules.data_processing import BileAcidDataProcessor, ProcessedData, validate_data_quality
 from modules.statistical_tests import StatisticalAnalyzer, format_analysis_report, format_twoway_apa
-from modules.visualization import BileAcidVisualizer, create_summary_figure
+from modules.visualization import BileAcidVisualizer
 from modules.report_generation import (
     ExcelReportGenerator, SignificancePlotter,
     ComprehensiveAnalysisResults, format_apa_statistics,
@@ -220,7 +223,11 @@ def generate_all_export_figures(processed, results, settings):
 
         # --- Totals ---
         key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated',
-                      'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated']
+                      'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated',
+                      'sulfated', 'oxidized', 'epimerized', 'nor_bile_acids',
+                      'total_12alpha_hydroxylated', 'total_non12alpha_hydroxylated',
+                      'primary_conjugated', 'secondary_conjugated',
+                      'primary_unconjugated', 'secondary_unconjugated']
         available_totals = [t for t in key_totals if t in processed.totals.columns]
 
         if available_totals:
@@ -303,7 +310,11 @@ def generate_all_export_figures(processed, results, settings):
         totals_combined = pd.concat([data[[group_col]], processed.totals.loc[data.index]], axis=1)
 
         key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated',
-                      'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated']
+                      'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated',
+                      'sulfated', 'oxidized', 'epimerized', 'nor_bile_acids',
+                      'total_12alpha_hydroxylated', 'total_non12alpha_hydroxylated',
+                      'primary_conjugated', 'secondary_conjugated',
+                      'primary_unconjugated', 'secondary_unconjugated']
         available_totals = [t for t in key_totals if t in totals_combined.columns]
 
         if available_totals:
@@ -370,9 +381,13 @@ def create_results_zip(processed, results, figures, report_gen, settings=None):
         id_cols.append(processed.structure.sample_id_col)
     if processed.structure.group_col and processed.structure.group_col in processed.sample_data.columns:
         id_cols.append(processed.structure.group_col)
-    
+    # Include Factor_ columns
+    for factor_col in processed.structure.factors.values():
+        if factor_col in processed.sample_data.columns and factor_col not in id_cols:
+            id_cols.append(factor_col)
+
     metadata = processed.sample_data[id_cols] if id_cols else pd.DataFrame(index=processed.sample_data.index)
-    
+
     buf = BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
         # Data files with metadata
@@ -423,9 +438,13 @@ def create_full_data_excel_with_highlighting(processed, lod_handling='half_lod')
         id_cols.append(processed.structure.sample_id_col)
     if processed.structure.group_col and processed.structure.group_col in processed.sample_data.columns:
         id_cols.append(processed.structure.group_col)
-    
+    # Include Factor_ columns
+    for factor_col in processed.structure.factors.values():
+        if factor_col in processed.sample_data.columns and factor_col not in id_cols:
+            id_cols.append(factor_col)
+
     metadata = processed.sample_data[id_cols] if id_cols else pd.DataFrame(index=processed.sample_data.index)
-    
+
     with pd.ExcelWriter(buf, engine='openpyxl') as writer:
         # Concentrations sheet with highlighting
         conc_df = pd.concat([metadata, processed.concentrations], axis=1)
@@ -567,8 +586,11 @@ def render_concentrations_tab(processed, settings):
     available_bas = processed.structure.bile_acid_cols
     is_twoway = results is not None and results.is_twoway
 
-    quick = st.segmented_control("Quick select", ["Top 10", "Significant", "Primary", "Secondary", "Custom"],
-                                  default="Top 10")
+    quick = st.segmented_control("Quick select",
+        ["Top 10", "Significant", "Primary", "Secondary", "Conjugated", "Unconjugated",
+         "Glycine", "Taurine", "Sulfated", "Oxidized", "Epimerized",
+         "12α-OH", "Non-12α-OH", "Nor", "Custom"],
+        default="Top 10")
 
     if quick == "Top 10":
         selected = processed.concentrations.mean().nlargest(10).index.tolist()
@@ -588,6 +610,26 @@ def render_concentrations_tab(processed, settings):
         selected = [b for b in get_primary() if b in available_bas][:10]
     elif quick == "Secondary":
         selected = [b for b in get_secondary() if b in available_bas][:10]
+    elif quick == "Conjugated":
+        selected = [b for b in get_conjugated() if b in available_bas][:10]
+    elif quick == "Unconjugated":
+        selected = [b for b in get_unconjugated() if b in available_bas][:10]
+    elif quick == "Glycine":
+        selected = [b for b in get_glycine_conjugated() if b in available_bas][:10]
+    elif quick == "Taurine":
+        selected = [b for b in get_taurine_conjugated() if b in available_bas][:10]
+    elif quick == "Sulfated":
+        selected = [b for b in get_sulfated() if b in available_bas][:10]
+    elif quick == "Oxidized":
+        selected = [b for b in get_keto_derivatives() if b in available_bas][:10]
+    elif quick == "Epimerized":
+        selected = [b for b in get_iso_forms() if b in available_bas][:10]
+    elif quick == "12α-OH":
+        selected = [b for b in get_12alpha_hydroxylated() if b in available_bas][:10]
+    elif quick == "Non-12α-OH":
+        selected = [b for b in get_non12alpha_hydroxylated() if b in available_bas][:10]
+    elif quick == "Nor":
+        selected = [b for b in get_nor_bile_acids() if b in available_bas][:10]
     else:
         selected = st.multiselect("Select BAs", available_bas, available_bas[:5])
 
@@ -729,6 +771,32 @@ def render_totals_tab(processed, settings):
                     })
             st.dataframe(pd.DataFrame(rows), hide_index=True)
 
+    # =========================================================================
+    # Category Composition Pie Charts
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("#### Category Composition - Pie Charts")
+    st.caption("Within-category breakdown: individual bile acids as percentage of each category total")
+
+    ba_names = processed.structure.bile_acid_cols
+    if is_twoway:
+        cat_pie_data = data.copy()
+        cat_group_col = '_factorial_group_'
+        cat_pie_data[cat_group_col] = cat_pie_data[fa_col].astype(str) + ' - ' + cat_pie_data[fb_col].astype(str)
+    else:
+        cat_pie_data = data
+        cat_group_col = group_col
+
+    fig_cat_pie = viz.plot_category_composition_pie_charts(
+        data=cat_pie_data,
+        group_col=cat_group_col,
+        bile_acid_cols=ba_names,
+        title='Bile Acid Category Composition by Group',
+    )
+    st.pyplot(fig_cat_pie)
+    store_figure(fig_cat_pie, 'category_composition_pie')
+    plt.close(fig_cat_pie)
+
 
 def render_percentages_tab(processed, settings):
     """Render percentages tab - comparing % composition across groups."""
@@ -754,8 +822,13 @@ def render_percentages_tab(processed, settings):
 
     quick = st.pills("Quick select",
                      ["Top 10 by mean %", "Significant", "Primary", "Secondary",
-                      "Glycine conjugated", "Taurine conjugated", "Custom"],
+                      "Conjugated", "Unconjugated", "Glycine", "Taurine",
+                      "Sulfated", "Oxidized", "Epimerized",
+                      "12α-OH", "Non-12α-OH", "Nor", "Custom"],
                      default="Top 10 by mean %", key="pct_quick")
+
+    def _pct_select(getter):
+        return [f'{ba}_pct' for ba in getter() if f'{ba}_pct' in pct_cols][:10]
 
     if quick == "Top 10 by mean %":
         top_pcts = percentages[pct_cols].mean().nlargest(10).index.tolist()
@@ -773,17 +846,29 @@ def render_percentages_tab(processed, settings):
             st.info("No significant percentage differences found. Showing top 10 by mean %.")
             selected_pct_cols = percentages[pct_cols].mean().nlargest(10).index.tolist()
     elif quick == "Primary":
-        primary_bas = get_primary()
-        selected_pct_cols = [f'{ba}_pct' for ba in primary_bas if f'{ba}_pct' in pct_cols][:10]
+        selected_pct_cols = _pct_select(get_primary)
     elif quick == "Secondary":
-        secondary_bas = get_secondary()
-        selected_pct_cols = [f'{ba}_pct' for ba in secondary_bas if f'{ba}_pct' in pct_cols][:10]
-    elif quick == "Glycine conjugated":
-        glycine_bas = get_glycine_conjugated()
-        selected_pct_cols = [f'{ba}_pct' for ba in glycine_bas if f'{ba}_pct' in pct_cols][:10]
-    elif quick == "Taurine conjugated":
-        taurine_bas = get_taurine_conjugated()
-        selected_pct_cols = [f'{ba}_pct' for ba in taurine_bas if f'{ba}_pct' in pct_cols][:10]
+        selected_pct_cols = _pct_select(get_secondary)
+    elif quick == "Conjugated":
+        selected_pct_cols = _pct_select(get_conjugated)
+    elif quick == "Unconjugated":
+        selected_pct_cols = _pct_select(get_unconjugated)
+    elif quick == "Glycine":
+        selected_pct_cols = _pct_select(get_glycine_conjugated)
+    elif quick == "Taurine":
+        selected_pct_cols = _pct_select(get_taurine_conjugated)
+    elif quick == "Sulfated":
+        selected_pct_cols = _pct_select(get_sulfated)
+    elif quick == "Oxidized":
+        selected_pct_cols = _pct_select(get_keto_derivatives)
+    elif quick == "Epimerized":
+        selected_pct_cols = _pct_select(get_iso_forms)
+    elif quick == "12α-OH":
+        selected_pct_cols = _pct_select(get_12alpha_hydroxylated)
+    elif quick == "Non-12α-OH":
+        selected_pct_cols = _pct_select(get_non12alpha_hydroxylated)
+    elif quick == "Nor":
+        selected_pct_cols = _pct_select(get_nor_bile_acids)
     else:
         selected_bas = st.multiselect("Select bile acids", ba_names, ba_names[:5], key="pct_custom")
         selected_pct_cols = [f'{ba}_pct' for ba in selected_bas]
@@ -899,7 +984,7 @@ def render_percentages_tab(processed, settings):
     st.pyplot(fig_pie)
     store_figure(fig_pie, 'percentages_pie')
     plt.close(fig_pie)
-    
+
     # =========================================================================
     # SECTION 3: Horizontal Bar Charts - Group Comparison
     # =========================================================================
@@ -1049,6 +1134,8 @@ def render_ratios_tab(processed, settings):
 
     # Define key clinical ratios
     key_ratios = ['primary_to_secondary', 'glycine_to_taurine', 'conjugated_to_unconjugated',
+                  '12alpha_to_non12alpha', 'primary_conjugated_to_secondary_conjugated',
+                  'primary_unconjugated_to_secondary_unconjugated',
                   'CA_to_CDCA', 'TCA_to_GCA', 'GCDCA_to_TCDCA']
 
     if quick == "All ratios":
@@ -1388,18 +1475,103 @@ def render_export_tab(processed, settings):
             st.caption(f"📊 Package includes {st.session_state.zip_figure_count} figures covering all analysis options")
     
     st.markdown("---")
-    st.markdown("#### Summary Figure")
-    if report_gen and st.button("🎨 Generate Summary Figure", key="gen_summary_fig"):
-        plotter = SignificancePlotter()
-        fig = plotter.plot_multi_panel_with_significance(
-            processed.sample_data, processed.structure.group_col, report_gen,
-            ['Total_All_BAs', 'Total_Primary', 'Total_Secondary', 'Total_Conjugated'], 2, settings['plot_type'])
-        st.pyplot(fig)
-        store_figure(fig, 'summary')
-        with st.container(horizontal=True):
-            st.download_button("📥 PNG", fig_to_bytes(fig), "summary.png", "image/png", key="download_summary_png")
-            st.download_button("📥 PDF", fig_to_bytes(fig, 'pdf'), "summary.pdf", "application/pdf", key="download_summary_pdf")
-        plt.close(fig)
+
+
+
+def render_heatmap_tab(processed, settings):
+    """Render heatmap tab - faceted heatmap of bile acid expression by category."""
+    st.markdown("### Faceted Heatmap")
+    st.caption("Visualize bile acid expression patterns across samples, grouped by category")
+
+    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    group_col = processed.structure.group_col
+
+    if not group_col:
+        st.warning("No group column detected.")
+        return
+
+    available_bas = set(processed.structure.bile_acid_cols)
+
+    # Build available categories (only those with detected BAs and a totals column)
+    available_categories = {}
+    for cat_key, ba_list in ANALYSIS_GROUPS.items():
+        present_bas = [ba for ba in ba_list if ba in available_bas]
+        if present_bas and cat_key in processed.totals.columns:
+            display = ANALYSIS_GROUP_DISPLAY_NAMES.get(cat_key, cat_key)
+            available_categories[display] = cat_key
+
+    if not available_categories:
+        st.warning("No categories available.")
+        return
+
+    # Category selection
+    sorted_display_names = sorted(available_categories.keys())
+    default_selection = [n for n in ["Primary", "Secondary", "Oxidized (Keto)", "Epimerized (Iso)"]
+                        if n in sorted_display_names]
+    if not default_selection:
+        default_selection = sorted_display_names[:3]
+
+    selected_display = st.multiselect(
+        "Select categories",
+        sorted_display_names,
+        default=default_selection,
+        key="heatmap_categories"
+    )
+
+    if not selected_display:
+        st.info("Select one or more categories to generate a heatmap.")
+        return
+
+    # Options
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        norm_mode = st.selectbox("Normalization", ["Z-score", "Row %", "None"],
+                                 index=0, key="heatmap_norm")
+        norm_map = {"Z-score": "zscore", "Row %": "row", "None": "none"}
+        normalization = norm_map[norm_mode]
+    with col2:
+        cmap = st.selectbox("Color map", ["RdBu_r", "coolwarm", "viridis", "YlOrRd", "PiYG"],
+                            index=0, key="heatmap_cmap")
+    with col3:
+        st.write("")  # spacer
+
+    # Build selected_categories dict: {cat_key: [BA1, BA2, ...]}
+    selected_cats = {}
+    for display in selected_display:
+        cat_key = available_categories[display]
+        present_bas = [ba for ba in ANALYSIS_GROUPS[cat_key] if ba in available_bas]
+        selected_cats[cat_key] = present_bas
+
+    # Generate button
+    if st.button("Generate Heatmap", type="primary", key="heatmap_generate"):
+        with st.spinner("Generating heatmap..."):
+            data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
+            data = data[data[group_col].astype(str).str.lower() != 'nan']
+
+            # Build factor_cols: use detected factors, fallback to group_col
+            if processed.structure.factors:
+                fc = processed.structure.factors
+            else:
+                fc = {group_col: group_col}
+
+            fig = viz.plot_faceted_heatmap(
+                sample_data=data,
+                totals=processed.totals.loc[data.index],
+                group_col=group_col,
+                selected_categories=selected_cats,
+                category_display_names=ANALYSIS_GROUP_DISPLAY_NAMES,
+                normalization=normalization,
+                cmap=cmap,
+                sample_id_col=processed.structure.sample_id_col,
+                factor_cols=fc,
+            )
+            st.session_state['heatmap_fig'] = fig_to_bytes(fig)
+            store_figure(fig, 'faceted_heatmap')
+            plt.close(fig)
+
+    # Display cached heatmap
+    if 'heatmap_fig' in st.session_state and st.session_state['heatmap_fig'] is not None:
+        st.image(st.session_state['heatmap_fig'], use_container_width=True)
 
 
 def main():
@@ -1525,13 +1697,15 @@ def main():
             compute_all_statistics(processed, settings)
             status.update(label="Statistics ready", state="complete")
         
-        tabs = st.tabs(["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios", "📊 Statistics", "💾 Export"])
+        tabs = st.tabs(["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
+                        "🗺️ Heatmap", "📊 Statistics", "💾 Export"])
         with tabs[0]: render_concentrations_tab(processed, settings)
         with tabs[1]: render_totals_tab(processed, settings)
         with tabs[2]: render_percentages_tab(processed, settings)
         with tabs[3]: render_ratios_tab(processed, settings)
-        with tabs[4]: render_statistics_tab(processed, settings)
-        with tabs[5]: render_export_tab(processed, settings)
+        with tabs[4]: render_heatmap_tab(processed, settings)
+        with tabs[5]: render_statistics_tab(processed, settings)
+        with tabs[6]: render_export_tab(processed, settings)
     
     else:
         # Show expected input format when no data is loaded

@@ -212,6 +212,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.UNCONJUGATED,
         origin=Origin.SECONDARY,
         core_structure=CoreStructure.DCA,
+        hydroxyl_positions=[3, 12],
         is_keto_derivative=True,
     ),
     "7keto_LCA": BileAcidSpecies(
@@ -220,6 +221,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.UNCONJUGATED,
         origin=Origin.SECONDARY,
         core_structure=CoreStructure.LCA,
+        hydroxyl_positions=[3],
         is_keto_derivative=True,
     ),
     "12keto_LCA": BileAcidSpecies(
@@ -228,6 +230,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.UNCONJUGATED,
         origin=Origin.SECONDARY,
         core_structure=CoreStructure.LCA,
+        hydroxyl_positions=[3],
         is_keto_derivative=True,
     ),
     "3KetoLCA": BileAcidSpecies(
@@ -244,6 +247,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.UNCONJUGATED,
         origin=Origin.SECONDARY,
         core_structure=CoreStructure.CA,
+        hydroxyl_positions=[7, 12],
         is_keto_derivative=True,
         notes="Oxidized CA derivative",
     ),
@@ -401,6 +405,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.SULFATED,
         origin=Origin.PRIMARY,
         core_structure=CoreStructure.CA,
+        hydroxyl_positions=[3, 7, 12],
         notes="Sulfated at position 7",
     ),
     "CA-3-S": BileAcidSpecies(
@@ -409,6 +414,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.SULFATED,
         origin=Origin.PRIMARY,
         core_structure=CoreStructure.CA,
+        hydroxyl_positions=[3, 7, 12],
         notes="Sulfated at position 3",
     ),
     "CDCA-3-S": BileAcidSpecies(
@@ -417,6 +423,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.SULFATED,
         origin=Origin.PRIMARY,
         core_structure=CoreStructure.CDCA,
+        hydroxyl_positions=[3, 7],
         notes="Sulfated at position 3",
     ),
     "DCA-3-S": BileAcidSpecies(
@@ -425,6 +432,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.SULFATED,
         origin=Origin.SECONDARY,
         core_structure=CoreStructure.DCA,
+        hydroxyl_positions=[3, 12],
         notes="Sulfated at position 3",
     ),
     "LCA-3-S": BileAcidSpecies(
@@ -433,6 +441,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.SULFATED,
         origin=Origin.SECONDARY,
         core_structure=CoreStructure.LCA,
+        hydroxyl_positions=[3],
         notes="Sulfated at position 3",
     ),
     "UDCA-3-S": BileAcidSpecies(
@@ -441,6 +450,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.SULFATED,
         origin=Origin.SECONDARY,
         core_structure=CoreStructure.UDCA,
+        hydroxyl_positions=[3, 7],
         notes="Sulfated at position 3",
     ),
     
@@ -453,6 +463,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.N_ACYL,
         origin=Origin.PRIMARY,
         core_structure=CoreStructure.CA,
+        hydroxyl_positions=[3, 7, 12],
         notes="N-acyl amidated form",
     ),
     "NDCA": BileAcidSpecies(
@@ -461,6 +472,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         conjugation=Conjugation.N_ACYL,
         origin=Origin.SECONDARY,
         core_structure=CoreStructure.DCA,
+        hydroxyl_positions=[3, 12],
         notes="N-acyl amidated form",
     ),
 }
@@ -526,8 +538,33 @@ def get_secondary() -> List[str]:
 
 def get_keto_derivatives() -> List[str]:
     """Get all keto derivative bile acids."""
-    return [abbr for abbr, spec in BILE_ACID_PANEL.items() 
+    return [abbr for abbr, spec in BILE_ACID_PANEL.items()
             if spec.is_keto_derivative]
+
+
+def get_iso_forms() -> List[str]:
+    """Get all iso/allo form bile acids."""
+    return [abbr for abbr, spec in BILE_ACID_PANEL.items()
+            if spec.is_iso_form]
+
+
+def get_nor_bile_acids() -> List[str]:
+    """Get all nor (N-acyl) bile acids."""
+    return get_species_by_conjugation(Conjugation.N_ACYL)
+
+
+def get_12alpha_hydroxylated() -> List[str]:
+    """Get all 12-alpha hydroxylated bile acids (CYP8B1-dependent pathway)."""
+    return [ s for s in get_species_by_core(CoreStructure.CA) + get_species_by_core(CoreStructure.DCA)
+        if not BILE_ACID_PANEL[s].is_keto_derivative and not BILE_ACID_PANEL[s].is_iso_form ]
+
+
+def get_non12alpha_hydroxylated() -> List[str]:
+    """Get all non-12-alpha hydroxylated bile acids."""
+    return [s for s in get_all_species()
+            if BILE_ACID_PANEL[s].core_structure not in [CoreStructure.CA, CoreStructure.DCA]
+            and not BILE_ACID_PANEL[s].is_keto_derivative
+            and not BILE_ACID_PANEL[s].is_iso_form]
 
 
 def get_all_species() -> List[str]:
@@ -594,6 +631,39 @@ ANALYSIS_GROUPS = {
     "secondary_unconjugated": [s for s in get_secondary() if s in get_unconjugated()],
     "primary_conjugated": [s for s in get_primary() if s in get_conjugated()],
     "secondary_conjugated": [s for s in get_secondary() if s in get_conjugated()],
+
+    # Oxidized, epimerized, nor bile acids
+    "oxidized": get_keto_derivatives(),
+    "epimerized": get_iso_forms(),
+    "nor_bile_acids": get_nor_bile_acids(),
+
+    # 12-alpha hydroxylation status (CYP8B1 pathway)
+    "total_12alpha_hydroxylated": get_12alpha_hydroxylated(),
+    "total_non12alpha_hydroxylated": get_non12alpha_hydroxylated(),
+}
+
+ANALYSIS_GROUP_DISPLAY_NAMES = {
+    "total_primary": "Primary",
+    "total_secondary": "Secondary",
+    "total_conjugated": "Conjugated",
+    "total_unconjugated": "Unconjugated",
+    "glycine_conjugated": "Glycine Conjugated",
+    "taurine_conjugated": "Taurine Conjugated",
+    "sulfated": "Sulfated",
+    "all_CA": "CA Family",
+    "all_CDCA": "CDCA Family",
+    "all_DCA": "DCA Family",
+    "all_LCA": "LCA Family",
+    "all_UDCA": "UDCA Family",
+    "primary_unconjugated": "Primary Unconjugated",
+    "secondary_unconjugated": "Secondary Unconjugated",
+    "primary_conjugated": "Primary Conjugated",
+    "secondary_conjugated": "Secondary Conjugated",
+    "oxidized": "Oxidized (Keto)",
+    "epimerized": "Epimerized (Iso)",
+    "nor_bile_acids": "Nor Bile Acids",
+    "total_12alpha_hydroxylated": "12α-Hydroxylated",
+    "total_non12alpha_hydroxylated": "Non-12α-Hydroxylated",
 }
 
 
@@ -635,10 +705,16 @@ CLINICAL_RATIOS = {
         "denominator": get_conjugated()
     },
     "12alpha_to_non12alpha": {
-        # 12-alpha hydroxylated: CA, DCA and their conjugates
-        "numerator": get_species_by_core(CoreStructure.CA) + get_species_by_core(CoreStructure.DCA),
-        "denominator": [s for s in get_all_species() 
-                       if BILE_ACID_PANEL[s].core_structure not in [CoreStructure.CA, CoreStructure.DCA]]
+        "numerator": get_12alpha_hydroxylated(),
+        "denominator": get_non12alpha_hydroxylated(),
+    },
+    "primary_conjugated_to_secondary_conjugated": {
+        "numerator": ANALYSIS_GROUPS["primary_conjugated"],
+        "denominator": ANALYSIS_GROUPS["secondary_conjugated"],
+    },
+    "primary_unconjugated_to_secondary_unconjugated": {
+        "numerator": ANALYSIS_GROUPS["primary_unconjugated"],
+        "denominator": ANALYSIS_GROUPS["secondary_unconjugated"],
     },
 }
 
