@@ -110,10 +110,13 @@ def fig_to_bytes(fig, format='png', dpi=300):
 
 
 def store_figure(fig, name):
-    """Store a figure as PNG bytes in session state (not the raw object)."""
+    """Store a figure as PNG+PDF bytes in session state (not the raw object)."""
     if 'figures' not in st.session_state:
         st.session_state.figures = {}
-    st.session_state.figures[name] = fig_to_bytes(fig, 'png', dpi=300)
+    st.session_state.figures[name] = {
+        'png': fig_to_bytes(fig, 'png', dpi=300),
+        'pdf': fig_to_bytes(fig, 'pdf'),
+    }
 
 
 def _ensure_report_generator(processed, settings):
@@ -203,8 +206,8 @@ def generate_all_export_figures(processed, results, settings):
     if not group_col or not results:
         return figures
     
-    data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
-    data = data[data[group_col].astype(str).str.lower() != 'nan']
+    mask = processed.sample_data[group_col].notna() & (processed.sample_data[group_col].astype(str).str.lower() != 'nan')
+    data = processed.sample_data.loc[mask]
     available_bas = processed.structure.bile_acid_cols
 
     is_threeway = getattr(results, 'is_threeway', False)
@@ -528,10 +531,15 @@ def create_results_zip(processed, results, figures, report_gen, settings=None):
             excel_buf.seek(0)
             zf.writestr('reports/statistical_report.xlsx', excel_buf.getvalue())
         
-        # Figures — may be matplotlib objects or pre-rendered bytes
+        # Figures — may be dicts with png/pdf keys, raw bytes, or matplotlib objects
         for name, fig in figures.items():
             if fig:
-                if isinstance(fig, bytes):
+                if isinstance(fig, dict):
+                    if fig.get('png'):
+                        zf.writestr(f'figures/{name}.png', fig['png'])
+                    if fig.get('pdf'):
+                        zf.writestr(f'figures/{name}.pdf', fig['pdf'])
+                elif isinstance(fig, bytes):
                     zf.writestr(f'figures/{name}.png', fig)
                 else:
                     zf.writestr(f'figures/{name}.png', fig_to_bytes(fig, 'png'))
@@ -706,8 +714,8 @@ def render_concentrations_tab(processed, settings):
         st.warning("No group column detected.")
         return
 
-    data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
-    data = data[data[group_col].astype(str).str.lower() != 'nan']
+    mask = processed.sample_data[group_col].notna() & (processed.sample_data[group_col].astype(str).str.lower() != 'nan')
+    data = processed.sample_data.loc[mask]
     available_bas = processed.structure.bile_acid_cols
     is_threeway = results is not None and getattr(results, 'is_threeway', False)
     is_twoway = results is not None and results.is_twoway
@@ -886,8 +894,9 @@ def render_totals_tab(processed, settings):
     if not group_col:
         return
 
-    data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
-    data = data[data[group_col].astype(str).str.lower() != 'nan']
+    # Only keep columns we actually need (factor/group cols) — avoid copying all BA columns
+    mask = processed.sample_data[group_col].notna() & (processed.sample_data[group_col].astype(str).str.lower() != 'nan')
+    data = processed.sample_data.loc[mask]
     is_threeway = results is not None and getattr(results, 'is_threeway', False)
     is_twoway = results is not None and results.is_twoway
 
@@ -919,6 +928,8 @@ def render_totals_tab(processed, settings):
         st.pyplot(fig)
         store_figure(fig, 'totals')
         plt.close(fig)
+        del fig, combined
+        gc.collect()
 
         with st.expander("Three-Way ANOVA Summary"):
             if tw_stats:
@@ -979,36 +990,39 @@ def render_totals_tab(processed, settings):
             st.dataframe(pd.DataFrame(rows), hide_index=True)
 
     # =========================================================================
-    # Category Composition Pie Charts
+    # Category Composition Pie Charts (rendered on demand to save memory)
     # =========================================================================
     st.markdown("---")
     st.markdown("#### Category Composition - Pie Charts")
-    st.caption("Within-category breakdown: individual bile acids as percentage of each category total")
+    if st.button("🥧 Generate Pie Charts", key="gen_cat_pie",
+                 help="Within-category breakdown: individual bile acids as % of each category total"):
+        ba_names = processed.structure.bile_acid_cols
+        if is_threeway:
+            cat_pie_data = data.assign(
+                _factorial_group_=data[results.factor_a_col].astype(str) + ' - '
+                + data[results.factor_b_col].astype(str) + ' - '
+                + data[results.factor_c_col].astype(str)
+            )
+            cat_group_col = '_factorial_group_'
+        elif is_twoway:
+            cat_pie_data = data.assign(
+                _factorial_group_=data[results.factor_a_col].astype(str) + ' - '
+                + data[results.factor_b_col].astype(str)
+            )
+            cat_group_col = '_factorial_group_'
+        else:
+            cat_pie_data = data
+            cat_group_col = group_col
 
-    ba_names = processed.structure.bile_acid_cols
-    if is_threeway:
-        cat_pie_data = data.copy()
-        cat_group_col = '_factorial_group_'
-        cat_pie_data[cat_group_col] = (cat_pie_data[results.factor_a_col].astype(str) + ' - '
-                                       + cat_pie_data[results.factor_b_col].astype(str) + ' - '
-                                       + cat_pie_data[results.factor_c_col].astype(str))
-    elif is_twoway:
-        cat_pie_data = data.copy()
-        cat_group_col = '_factorial_group_'
-        cat_pie_data[cat_group_col] = cat_pie_data[fa_col].astype(str) + ' - ' + cat_pie_data[fb_col].astype(str)
-    else:
-        cat_pie_data = data
-        cat_group_col = group_col
-
-    fig_cat_pie = viz.plot_category_composition_pie_charts(
-        data=cat_pie_data,
-        group_col=cat_group_col,
-        bile_acid_cols=ba_names,
-        title='Bile Acid Category Composition by Group',
-    )
-    st.pyplot(fig_cat_pie)
-    store_figure(fig_cat_pie, 'category_composition_pie')
-    plt.close(fig_cat_pie)
+        fig_cat_pie = viz.plot_category_composition_pie_charts(
+            data=cat_pie_data,
+            group_col=cat_group_col,
+            bile_acid_cols=ba_names,
+            title='Bile Acid Category Composition by Group',
+        )
+        st.pyplot(fig_cat_pie)
+        store_figure(fig_cat_pie, 'category_composition_pie')
+        plt.close(fig_cat_pie)
 
 
 def render_percentages_tab(processed, settings):
@@ -1024,8 +1038,8 @@ def render_percentages_tab(processed, settings):
         st.warning("No group column detected.")
         return
     
-    data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
-    data = data[data[group_col].astype(str).str.lower() != 'nan']
+    mask = processed.sample_data[group_col].notna() & (processed.sample_data[group_col].astype(str).str.lower() != 'nan')
+    data = processed.sample_data.loc[mask]
     percentages = processed.percentages.loc[data.index].copy()
     
     # Get available percentage columns (remove _pct suffix for display)
@@ -1408,8 +1422,8 @@ def render_ratios_tab(processed, settings):
         st.warning("No group column detected.")
         return
 
-    data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
-    data = data[data[group_col].astype(str).str.lower() != 'nan']
+    mask = processed.sample_data[group_col].notna() & (processed.sample_data[group_col].astype(str).str.lower() != 'nan')
+    data = processed.sample_data.loc[mask]
 
     if is_threeway:
         fa_col, fb_col, fc_col = results.factor_a_col, results.factor_b_col, results.factor_c_col
@@ -1961,8 +1975,8 @@ def render_heatmap_tab(processed, settings):
     # Generate button
     if st.button("Generate Heatmap", type="primary", key="heatmap_generate"):
         with st.spinner("Generating heatmap..."):
-            data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
-            data = data[data[group_col].astype(str).str.lower() != 'nan']
+            hmask = processed.sample_data[group_col].notna() & (processed.sample_data[group_col].astype(str).str.lower() != 'nan')
+            data = processed.sample_data.loc[hmask]
 
             # Build factor_cols: use detected factors, fallback to group_col
             if processed.structure.factors:
@@ -2141,14 +2155,15 @@ def main():
             needed = tab_sections.get(active_tab, [])
             missing = [s for s in needed if s not in st.session_state.stats_sections_done]
             if missing:
-                # Free memory from previous section before computing new one
-                plt.close('all')
-                gc.collect()
                 label = f"Computing {', '.join(missing)} statistics..."
                 with st.status(label, expanded=False) as status:
                     for sec in missing:
                         ensure_section_computed(processed, settings, sec)
                     status.update(label="Statistics ready", state="complete")
+
+            # Always free matplotlib/gc memory before rendering a new tab
+            plt.close('all')
+            gc.collect()
 
             if active_tab == "📈 Concentrations":
                 render_concentrations_tab(processed, settings)
