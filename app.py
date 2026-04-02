@@ -2118,45 +2118,60 @@ def main():
         is_threeway = n_factors >= 3
 
         if is_threeway:
-            # Three-way: compute only individual_ba stats upfront (default tab)
-            with st.status("Computing concentration statistics...", expanded=False) as status:
-                ensure_section_computed(processed, settings, 'individual_ba')
-                status.update(label="Concentration stats ready", state="complete")
+            # Three-way: use a selector so only ONE section computes at a time
+            # (st.tabs renders all content on every run, which OOMs on Cloud)
+            tab_options = ["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
+                           "🗺️ Heatmap", "📊 Statistics", "💾 Export"]
+            active_tab = st.segmented_control("Section", tab_options, default="📈 Concentrations")
+
+            # Map tab to stats section(s) needed
+            tab_sections = {
+                "📈 Concentrations": ['individual_ba'],
+                "📊 Totals": ['totals'],
+                "📉 Percentages": ['percentages'],
+                "🔢 Ratios": ['ratios'],
+                "🗺️ Heatmap": [],
+                "📊 Statistics": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories'],
+                "💾 Export": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories'],
+            }
+            needed = tab_sections.get(active_tab, [])
+            missing = [s for s in needed if s not in st.session_state.stats_sections_done]
+            if missing:
+                label = f"Computing {', '.join(missing)} statistics..."
+                with st.status(label, expanded=False) as status:
+                    for sec in missing:
+                        ensure_section_computed(processed, settings, sec)
+                    status.update(label="Statistics ready", state="complete")
+
+            if active_tab == "📈 Concentrations":
+                render_concentrations_tab(processed, settings)
+            elif active_tab == "📊 Totals":
+                render_totals_tab(processed, settings)
+            elif active_tab == "📉 Percentages":
+                render_percentages_tab(processed, settings)
+            elif active_tab == "🔢 Ratios":
+                render_ratios_tab(processed, settings)
+            elif active_tab == "🗺️ Heatmap":
+                render_heatmap_tab(processed, settings)
+            elif active_tab == "📊 Statistics":
+                render_statistics_tab(processed, settings)
+            elif active_tab == "💾 Export":
+                render_export_tab(processed, settings)
         else:
-            # One-way / two-way: compute all stats at once (fits in memory)
+            # One-way / two-way: compute all stats at once (fits in memory), use tabs
             with st.status("Computing statistics...", expanded=False) as status:
                 compute_all_statistics(processed, settings)
                 status.update(label="Statistics ready", state="complete")
 
-        tabs = st.tabs(["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
-                        "🗺️ Heatmap", "📊 Statistics", "💾 Export"])
-        with tabs[0]:
-            render_concentrations_tab(processed, settings)
-        with tabs[1]:
-            if is_threeway:
-                ensure_section_computed(processed, settings, 'totals')
-            render_totals_tab(processed, settings)
-        with tabs[2]:
-            if is_threeway:
-                ensure_section_computed(processed, settings, 'percentages')
-            render_percentages_tab(processed, settings)
-        with tabs[3]:
-            if is_threeway:
-                ensure_section_computed(processed, settings, 'ratios')
-            render_ratios_tab(processed, settings)
-        with tabs[4]:
-            render_heatmap_tab(processed, settings)
-        with tabs[5]:
-            if is_threeway:
-                # Statistics tab needs all sections
-                for sec in ['totals', 'ratios', 'percentages', 'categories']:
-                    ensure_section_computed(processed, settings, sec)
-            render_statistics_tab(processed, settings)
-        with tabs[6]:
-            if is_threeway:
-                for sec in ['totals', 'ratios', 'percentages', 'categories']:
-                    ensure_section_computed(processed, settings, sec)
-            render_export_tab(processed, settings)
+            tabs = st.tabs(["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
+                            "🗺️ Heatmap", "📊 Statistics", "💾 Export"])
+            with tabs[0]: render_concentrations_tab(processed, settings)
+            with tabs[1]: render_totals_tab(processed, settings)
+            with tabs[2]: render_percentages_tab(processed, settings)
+            with tabs[3]: render_ratios_tab(processed, settings)
+            with tabs[4]: render_heatmap_tab(processed, settings)
+            with tabs[5]: render_statistics_tab(processed, settings)
+            with tabs[6]: render_export_tab(processed, settings)
     
     else:
         # Show expected input format when no data is loaded
