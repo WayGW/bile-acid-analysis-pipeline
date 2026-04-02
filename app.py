@@ -107,6 +107,8 @@ def fig_to_bytes(fig, format='png', dpi=300):
 
 def store_figure(fig, name):
     """Store a figure in session state."""
+    if 'figures' not in st.session_state:
+        st.session_state.figures = {}
     st.session_state.figures[name] = fig
 
 

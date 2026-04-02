@@ -10,6 +10,7 @@ Generates organized Excel workbooks with:
 Also handles figure generation with significance annotations.
 """
 
+import gc
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -591,7 +592,7 @@ class ExcelReportGenerator:
             return self.results
 
         # 1. Individual bile acids
-        for ba in self.ba_cols:
+        for i, ba in enumerate(self.ba_cols):
             if ba in valid_data.columns:
                 if self._should_exclude_for_lod(ba, valid_data):
                     continue
@@ -602,6 +603,9 @@ class ExcelReportGenerator:
                     self.results.twoway_individual_ba[ba] = result
                 except Exception as e:
                     print(f"Could not analyze {ba} (two-way): {e}")
+                if (i + 1) % 20 == 0:
+                    gc.collect()
+        gc.collect()
 
         # 2. Totals
         if self.totals is not None:
@@ -617,6 +621,8 @@ class ExcelReportGenerator:
                         self.results.twoway_totals[col] = result
                     except Exception as e:
                         print(f"Could not analyze {col} (two-way): {e}")
+            del combined
+            gc.collect()
 
         # 3. Ratios
         if self.ratios is not None:
@@ -630,6 +636,8 @@ class ExcelReportGenerator:
                         self.results.twoway_ratios[col] = result
                     except Exception as e:
                         print(f"Could not analyze {col} (two-way): {e}")
+            del combined
+            gc.collect()
 
         # 4. Percentages
         if self.percentages is not None:
@@ -643,6 +651,8 @@ class ExcelReportGenerator:
                         self.results.twoway_percentages[col] = result
                     except Exception as e:
                         print(f"Could not analyze {col} (two-way): {e}")
+            del combined
+            gc.collect()
 
         # 5. Category sheets (one-way still generated for backward compat)
         self.generate_all_sheets()
@@ -675,7 +685,7 @@ class ExcelReportGenerator:
             return self.results
 
         # 1. Individual bile acids
-        for ba in self.ba_cols:
+        for i, ba in enumerate(self.ba_cols):
             if ba in valid_data.columns:
                 if self._should_exclude_for_lod(ba, valid_data):
                     continue
@@ -686,6 +696,9 @@ class ExcelReportGenerator:
                     self.results.threeway_individual_ba[ba] = result
                 except Exception as e:
                     print(f"Could not analyze {ba} (three-way): {e}")
+                if (i + 1) % 20 == 0:
+                    gc.collect()
+        gc.collect()
 
         # 2. Totals
         if self.totals is not None:
@@ -701,6 +714,8 @@ class ExcelReportGenerator:
                         self.results.threeway_totals[col] = result
                     except Exception as e:
                         print(f"Could not analyze {col} (three-way): {e}")
+            del combined
+            gc.collect()
 
         # 3. Ratios
         if self.ratios is not None:
@@ -714,6 +729,8 @@ class ExcelReportGenerator:
                         self.results.threeway_ratios[col] = result
                     except Exception as e:
                         print(f"Could not analyze {col} (three-way): {e}")
+            del combined
+            gc.collect()
 
         # 4. Percentages
         if self.percentages is not None:
@@ -727,6 +744,8 @@ class ExcelReportGenerator:
                         self.results.threeway_percentages[col] = result
                     except Exception as e:
                         print(f"Could not analyze {col} (three-way): {e}")
+            del combined
+            gc.collect()
 
         # 5. Category sheets
         self.generate_all_sheets()

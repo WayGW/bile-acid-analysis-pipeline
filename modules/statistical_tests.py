@@ -1089,7 +1089,7 @@ class StatisticalAnalyzer:
             from statsmodels.stats.anova import anova_lm
 
             # Sanitize column names for formula
-            df = data.copy()
+            df = data[[value_col, factor_a_col, factor_b_col]].copy()
             safe_val = 'Y_value'
             safe_a = 'Factor_A'
             safe_b = 'Factor_B'
@@ -1203,7 +1203,7 @@ class StatisticalAnalyzer:
             alpha=self.alpha
         )
 
-        df = data.copy()
+        df = data[[value_col, factor_a_col, factor_b_col]].copy()
         Y = df[value_col].values.astype(float)
 
         levels_a = sorted(df[factor_a_col].unique())
@@ -1697,7 +1697,7 @@ class StatisticalAnalyzer:
             from statsmodels.stats.anova import anova_lm
 
             # Sanitize column names for formula
-            df = data.copy()
+            df = data[[value_col, factor_a_col, factor_b_col, factor_c_col]].copy()
             safe_val = 'Y_value'
             safe_a = 'Factor_A'
             safe_b = 'Factor_B'
@@ -1892,7 +1892,7 @@ class StatisticalAnalyzer:
             alpha=self.alpha
         )
 
-        df = data.copy()
+        df = data[[value_col, factor_a_col, factor_b_col, factor_c_col]].copy()
         Y = df[value_col].values.astype(float)
         n = len(Y)
 
