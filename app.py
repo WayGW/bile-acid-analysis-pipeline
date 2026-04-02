@@ -62,6 +62,7 @@ def init_session_state():
         'figures': {},
         'report_generator': None,
         'stats_computed': False,
+        'stats_sections_done': set(),  # Track which stat sections are computed
         'last_file': None,
         'last_settings': None,  # Track settings that affect data/stats
         'zip_data': None,  # Cached ZIP bytes for download
@@ -89,6 +90,8 @@ def check_settings_changed(settings):
     if st.session_state.last_settings != current:
         # Settings changed - need to reprocess data and recompute stats
         st.session_state.stats_computed = False
+        st.session_state.stats_sections_done = set()
+        st.session_state.report_generator = None
         st.session_state.figures = {}
         st.session_state.zip_data = None
         st.session_state.zip_figure_count = 0
@@ -112,16 +115,12 @@ def store_figure(fig, name):
     st.session_state.figures[name] = fig
 
 
-def compute_all_statistics(processed, settings):
-    """Compute all statistics once and cache."""
-    if st.session_state.stats_computed:
-        return st.session_state.analysis_results
-    
-    group_col = processed.structure.group_col
-    if not group_col:
-        return None
+def _ensure_report_generator(processed, settings):
+    """Create ExcelReportGenerator if not already cached."""
+    if st.session_state.report_generator is not None:
+        return st.session_state.report_generator
 
-    # Detect factor info for two-way ANOVA
+    group_col = processed.structure.group_col
     factors = getattr(processed.structure, 'factors', {})
     n_factors = getattr(processed.structure, 'n_factors', 0)
 
@@ -140,11 +139,40 @@ def compute_all_statistics(processed, settings):
         n_samples=len(processed.sample_data),
         lod_threshold=settings.get('lod_threshold', 50),
     )
-    
+    st.session_state.report_generator = report_gen
+    return report_gen
+
+
+def ensure_section_computed(processed, settings, section):
+    """Compute stats for a single section if not already done."""
+    if section in st.session_state.stats_sections_done:
+        return st.session_state.analysis_results
+
+    group_col = processed.structure.group_col
+    if not group_col:
+        return st.session_state.analysis_results
+
+    report_gen = _ensure_report_generator(processed, settings)
+    results = report_gen.run_section(section)
+    st.session_state.analysis_results = results
+    st.session_state.stats_sections_done.add(section)
+    return results
+
+
+def compute_all_statistics(processed, settings):
+    """Compute all statistics at once (used for one-way and two-way designs)."""
+    if st.session_state.stats_computed:
+        return st.session_state.analysis_results
+
+    group_col = processed.structure.group_col
+    if not group_col:
+        return None
+
+    report_gen = _ensure_report_generator(processed, settings)
     results = report_gen.run_all_statistics()
     st.session_state.analysis_results = results
-    st.session_state.report_generator = report_gen
     st.session_state.stats_computed = True
+    st.session_state.stats_sections_done = {'individual_ba', 'totals', 'ratios', 'percentages', 'categories'}
     return results
 
 
@@ -1971,7 +1999,9 @@ def main():
         file_changed = st.session_state.last_file != uploaded.name
         if file_changed:
             st.session_state.stats_computed = False
+            st.session_state.stats_sections_done = set()
             st.session_state.figures = {}
+            st.session_state.report_generator = None
             st.session_state.zip_data = None
             st.session_state.zip_figure_count = 0
             st.session_state.last_file = uploaded.name
@@ -2012,6 +2042,8 @@ def main():
         if sheet_changed:
             st.session_state.selected_sheet = selected_sheet
             st.session_state.stats_computed = False
+            st.session_state.stats_sections_done = set()
+            st.session_state.report_generator = None
             st.session_state.figures = {}
             st.session_state.zip_data = None
             st.session_state.zip_figure_count = 0
@@ -2082,19 +2114,49 @@ def main():
                     # Highlight high replacement rates
                     st.dataframe(lod_df, width="stretch", hide_index=True)
         
-        with st.status("Computing statistics...", expanded=False) as status:
-            compute_all_statistics(processed, settings)
-            status.update(label="Statistics ready", state="complete")
-        
+        n_factors = getattr(processed.structure, 'n_factors', 0)
+        is_threeway = n_factors >= 3
+
+        if is_threeway:
+            # Three-way: compute only individual_ba stats upfront (default tab)
+            with st.status("Computing concentration statistics...", expanded=False) as status:
+                ensure_section_computed(processed, settings, 'individual_ba')
+                status.update(label="Concentration stats ready", state="complete")
+        else:
+            # One-way / two-way: compute all stats at once (fits in memory)
+            with st.status("Computing statistics...", expanded=False) as status:
+                compute_all_statistics(processed, settings)
+                status.update(label="Statistics ready", state="complete")
+
         tabs = st.tabs(["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
                         "🗺️ Heatmap", "📊 Statistics", "💾 Export"])
-        with tabs[0]: render_concentrations_tab(processed, settings)
-        with tabs[1]: render_totals_tab(processed, settings)
-        with tabs[2]: render_percentages_tab(processed, settings)
-        with tabs[3]: render_ratios_tab(processed, settings)
-        with tabs[4]: render_heatmap_tab(processed, settings)
-        with tabs[5]: render_statistics_tab(processed, settings)
-        with tabs[6]: render_export_tab(processed, settings)
+        with tabs[0]:
+            render_concentrations_tab(processed, settings)
+        with tabs[1]:
+            if is_threeway:
+                ensure_section_computed(processed, settings, 'totals')
+            render_totals_tab(processed, settings)
+        with tabs[2]:
+            if is_threeway:
+                ensure_section_computed(processed, settings, 'percentages')
+            render_percentages_tab(processed, settings)
+        with tabs[3]:
+            if is_threeway:
+                ensure_section_computed(processed, settings, 'ratios')
+            render_ratios_tab(processed, settings)
+        with tabs[4]:
+            render_heatmap_tab(processed, settings)
+        with tabs[5]:
+            if is_threeway:
+                # Statistics tab needs all sections
+                for sec in ['totals', 'ratios', 'percentages', 'categories']:
+                    ensure_section_computed(processed, settings, sec)
+            render_statistics_tab(processed, settings)
+        with tabs[6]:
+            if is_threeway:
+                for sec in ['totals', 'ratios', 'percentages', 'categories']:
+                    ensure_section_computed(processed, settings, sec)
+            render_export_tab(processed, settings)
     
     else:
         # Show expected input format when no data is loaded

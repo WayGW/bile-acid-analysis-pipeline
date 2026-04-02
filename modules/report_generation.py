@@ -491,269 +491,315 @@ class ExcelReportGenerator:
         self.results.lod_threshold = self.lod_threshold
         return self.results
 
-    def run_all_statistics(self) -> ComprehensiveAnalysisResults:
-        """Run all statistical analyses and cache results."""
-        # Filter valid groups
-        valid_data = self.data[self.data[self.group_col].notna()].copy()
-        valid_data = valid_data[valid_data[self.group_col].astype(str).str.lower() != 'nan']
+    def _get_valid_data(self) -> pd.DataFrame:
+        """Filter valid groups from data (cached)."""
+        if not hasattr(self, '_valid_data_cache'):
+            vd = self.data[self.data[self.group_col].notna()].copy()
+            self._valid_data_cache = vd[vd[self.group_col].astype(str).str.lower() != 'nan']
+        return self._valid_data_cache
 
-        # ================================================================
-        # THREE-WAY BRANCH: if n_factors == 3, use three-way ANOVA
-        # ================================================================
+    @staticmethod
+    def _log(msg: str):
+        """Print a timestamped log message (visible in Streamlit Cloud logs)."""
+        from datetime import datetime
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+    # ------------------------------------------------------------------
+    # Section runners — called individually per tab
+    # ------------------------------------------------------------------
+
+    def run_section(self, section: str) -> ComprehensiveAnalysisResults:
+        """
+        Run statistics for a single section and return updated results.
+
+        section: 'individual_ba' | 'totals' | 'ratios' | 'percentages' | 'categories'
+        """
+        valid_data = self._get_valid_data()
+
+        # Set up factor metadata once (idempotent)
+        self._init_factor_metadata()
+
         if self.n_factors == 3 and len(self.factors) >= 3:
-            self._run_all_threeway_statistics(valid_data)
-            return self._finalize_results()
-
-        # ================================================================
-        # TWO-WAY BRANCH: if n_factors == 2, use two-way ANOVA for all
-        # ================================================================
-        if self.n_factors == 2 and len(self.factors) >= 2:
-            self._run_all_twoway_statistics(valid_data)
-            return self._finalize_results()
-
-        # ================================================================
-        # ONE-WAY BRANCH: existing code path (completely unchanged)
-        # ================================================================
-
-        # 1. Individual bile acids
-        for ba in self.ba_cols:
-            if ba in valid_data.columns:
-                if self._should_exclude_for_lod(ba, valid_data):
-                    continue
-                try:
-                    result = self.analyzer.analyze(valid_data, ba, self.group_col)
-                    self.results.individual_ba_results[ba] = result
-                except Exception as e:
-                    print(f"Could not analyze {ba}: {e}")
-        
-        # 2. Totals
-        if self.totals is not None:
-            combined = pd.concat([valid_data[[self.group_col]], self.totals.loc[valid_data.index]], axis=1)
-            for col in self.totals.columns:
-                if not combined[col].isna().all():
-                    if self._should_exclude_category_for_lod(col, valid_data):
-                        continue
-                    try:
-                        result = self.analyzer.analyze(combined, col, self.group_col)
-                        self.results.totals_results[col] = result
-                    except Exception as e:
-                        print(f"Could not analyze {col}: {e}")
-        
-        # 3. Ratios
-        if self.ratios is not None:
-            combined = pd.concat([valid_data[[self.group_col]], self.ratios.loc[valid_data.index]], axis=1)
-            for col in self.ratios.columns:
-                if not combined[col].isna().all():
-                    try:
-                        result = self.analyzer.analyze(combined, col, self.group_col)
-                        self.results.ratios_results[col] = result
-                    except Exception as e:
-                        print(f"Could not analyze {col}: {e}")
-        
-        # 4. Percentages (NEW)
-        if self.percentages is not None:
-            combined = pd.concat([valid_data[[self.group_col]], self.percentages.loc[valid_data.index]], axis=1)
-            for col in self.percentages.columns:
-                if not combined[col].isna().all():
-                    try:
-                        result = self.analyzer.analyze(combined, col, self.group_col)
-                        self.results.percentages_results[col] = result
-                    except Exception as e:
-                        print(f"Could not analyze {col}: {e}")
-        
-        # 5. Category totals (for Excel sheets)
-        self.generate_all_sheets()
-        for cat_name, sheet in self.analysis_sheets.items():
-            if sheet.statistical_result:
-                self.results.category_results[cat_name] = sheet.statistical_result
+            self._run_threeway_section(valid_data, section)
+        elif self.n_factors == 2 and len(self.factors) >= 2:
+            self._run_twoway_section(valid_data, section)
+        else:
+            self._run_oneway_section(valid_data, section)
 
         return self._finalize_results()
 
-    def _run_all_twoway_statistics(self, valid_data: pd.DataFrame) -> ComprehensiveAnalysisResults:
-        """
-        Run two-way ANOVA for all analytes when n_factors == 2.
+    def _init_factor_metadata(self):
+        """Set factor names/cols on results (idempotent)."""
+        if self.n_factors >= 2 and len(self.factors) >= 2:
+            factor_items = list(self.factors.items())
+            fa_name, fa_col = factor_items[0]
+            fb_name, fb_col = factor_items[1]
+            if self.n_factors >= 3 and len(self.factors) >= 3:
+                fc_name, fc_col = factor_items[2]
+                self.results.is_threeway = True
+                self.results.factor_c_name = fc_name
+                self.results.factor_c_col = fc_col
+            else:
+                self.results.is_twoway = True
+            self.results.factor_a_name = fa_name
+            self.results.factor_b_name = fb_name
+            self.results.factor_a_col = fa_col
+            self.results.factor_b_col = fb_col
 
-        This replaces the one-way path entirely when a two-factor
-        design is detected.
-        """
+    # --- ONE-WAY sections ---
+
+    def _run_oneway_section(self, valid_data, section):
+        if section == 'individual_ba':
+            self._log(f"Running one-way ANOVA for {len(self.ba_cols)} individual bile acids...")
+            for ba in self.ba_cols:
+                if ba in valid_data.columns:
+                    if self._should_exclude_for_lod(ba, valid_data):
+                        continue
+                    try:
+                        result = self.analyzer.analyze(valid_data, ba, self.group_col)
+                        self.results.individual_ba_results[ba] = result
+                    except Exception as e:
+                        print(f"Could not analyze {ba}: {e}")
+            self._log(f"  Done: {len(self.results.individual_ba_results)} individual BAs analyzed")
+
+        elif section == 'totals':
+            if self.totals is not None:
+                self._log(f"Running one-way ANOVA for {len(self.totals.columns)} totals...")
+                combined = pd.concat([valid_data[[self.group_col]], self.totals.loc[valid_data.index]], axis=1)
+                for col in self.totals.columns:
+                    if not combined[col].isna().all():
+                        if self._should_exclude_category_for_lod(col, valid_data):
+                            continue
+                        try:
+                            result = self.analyzer.analyze(combined, col, self.group_col)
+                            self.results.totals_results[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col}: {e}")
+                self._log(f"  Done: {len(self.results.totals_results)} totals analyzed")
+
+        elif section == 'ratios':
+            if self.ratios is not None:
+                self._log(f"Running one-way ANOVA for {len(self.ratios.columns)} ratios...")
+                combined = pd.concat([valid_data[[self.group_col]], self.ratios.loc[valid_data.index]], axis=1)
+                for col in self.ratios.columns:
+                    if not combined[col].isna().all():
+                        try:
+                            result = self.analyzer.analyze(combined, col, self.group_col)
+                            self.results.ratios_results[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col}: {e}")
+                self._log(f"  Done: {len(self.results.ratios_results)} ratios analyzed")
+
+        elif section == 'percentages':
+            if self.percentages is not None:
+                self._log(f"Running one-way ANOVA for {len(self.percentages.columns)} percentages...")
+                combined = pd.concat([valid_data[[self.group_col]], self.percentages.loc[valid_data.index]], axis=1)
+                for col in self.percentages.columns:
+                    if not combined[col].isna().all():
+                        try:
+                            result = self.analyzer.analyze(combined, col, self.group_col)
+                            self.results.percentages_results[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col}: {e}")
+                self._log(f"  Done: {len(self.results.percentages_results)} percentages analyzed")
+
+        elif section == 'categories':
+            self._log("Running one-way ANOVA for category sheets...")
+            self.generate_all_sheets()
+            for cat_name, sheet in self.analysis_sheets.items():
+                if sheet.statistical_result:
+                    self.results.category_results[cat_name] = sheet.statistical_result
+            self._log(f"  Done: {len(self.results.category_results)} categories analyzed")
+
+    # --- TWO-WAY sections ---
+
+    def _run_twoway_section(self, valid_data, section):
         factor_items = list(self.factors.items())
         fa_name, fa_col = factor_items[0]
         fb_name, fb_col = factor_items[1]
 
-        self.results.is_twoway = True
-        self.results.factor_a_name = fa_name
-        self.results.factor_b_name = fb_name
-        self.results.factor_a_col = fa_col
-        self.results.factor_b_col = fb_col
-
-        # Verify factor columns exist in data
         if fa_col not in valid_data.columns or fb_col not in valid_data.columns:
             print(f"Factor columns not found in data: {fa_col}, {fb_col}")
-            return self.results
+            return
 
-        # 1. Individual bile acids
-        for i, ba in enumerate(self.ba_cols):
-            if ba in valid_data.columns:
-                if self._should_exclude_for_lod(ba, valid_data):
-                    continue
-                try:
-                    result = self.analyzer.analyze_twoway(
-                        valid_data, ba, fa_col, fb_col, fa_name, fb_name
-                    )
-                    self.results.twoway_individual_ba[ba] = result
-                except Exception as e:
-                    print(f"Could not analyze {ba} (two-way): {e}")
-                if (i + 1) % 20 == 0:
-                    gc.collect()
-        gc.collect()
-
-        # 2. Totals
-        if self.totals is not None:
-            combined = pd.concat([valid_data[[fa_col, fb_col]], self.totals.loc[valid_data.index]], axis=1)
-            for col in self.totals.columns:
-                if not combined[col].isna().all():
-                    if self._should_exclude_category_for_lod(col, valid_data):
+        if section == 'individual_ba':
+            self._log(f"Running two-way ANOVA ({fa_name}×{fb_name}) for {len(self.ba_cols)} individual bile acids...")
+            for i, ba in enumerate(self.ba_cols):
+                if ba in valid_data.columns:
+                    if self._should_exclude_for_lod(ba, valid_data):
                         continue
                     try:
                         result = self.analyzer.analyze_twoway(
-                            combined, col, fa_col, fb_col, fa_name, fb_name
+                            valid_data, ba, fa_col, fb_col, fa_name, fb_name
                         )
-                        self.results.twoway_totals[col] = result
+                        self.results.twoway_individual_ba[ba] = result
                     except Exception as e:
-                        print(f"Could not analyze {col} (two-way): {e}")
-            del combined
+                        print(f"Could not analyze {ba} (two-way): {e}")
+                    if (i + 1) % 20 == 0:
+                        gc.collect()
             gc.collect()
+            self._log(f"  Done: {len(self.results.twoway_individual_ba)} individual BAs analyzed")
 
-        # 3. Ratios
-        if self.ratios is not None:
-            combined = pd.concat([valid_data[[fa_col, fb_col]], self.ratios.loc[valid_data.index]], axis=1)
-            for col in self.ratios.columns:
-                if not combined[col].isna().all():
-                    try:
-                        result = self.analyzer.analyze_twoway(
-                            combined, col, fa_col, fb_col, fa_name, fb_name
-                        )
-                        self.results.twoway_ratios[col] = result
-                    except Exception as e:
-                        print(f"Could not analyze {col} (two-way): {e}")
-            del combined
-            gc.collect()
+        elif section == 'totals':
+            if self.totals is not None:
+                self._log(f"Running two-way ANOVA for {len(self.totals.columns)} totals...")
+                combined = pd.concat([valid_data[[fa_col, fb_col]], self.totals.loc[valid_data.index]], axis=1)
+                for col in self.totals.columns:
+                    if not combined[col].isna().all():
+                        if self._should_exclude_category_for_lod(col, valid_data):
+                            continue
+                        try:
+                            result = self.analyzer.analyze_twoway(
+                                combined, col, fa_col, fb_col, fa_name, fb_name
+                            )
+                            self.results.twoway_totals[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (two-way): {e}")
+                del combined
+                gc.collect()
+                self._log(f"  Done: {len(self.results.twoway_totals)} totals analyzed")
 
-        # 4. Percentages
-        if self.percentages is not None:
-            combined = pd.concat([valid_data[[fa_col, fb_col]], self.percentages.loc[valid_data.index]], axis=1)
-            for col in self.percentages.columns:
-                if not combined[col].isna().all():
-                    try:
-                        result = self.analyzer.analyze_twoway(
-                            combined, col, fa_col, fb_col, fa_name, fb_name
-                        )
-                        self.results.twoway_percentages[col] = result
-                    except Exception as e:
-                        print(f"Could not analyze {col} (two-way): {e}")
-            del combined
-            gc.collect()
+        elif section == 'ratios':
+            if self.ratios is not None:
+                self._log(f"Running two-way ANOVA for {len(self.ratios.columns)} ratios...")
+                combined = pd.concat([valid_data[[fa_col, fb_col]], self.ratios.loc[valid_data.index]], axis=1)
+                for col in self.ratios.columns:
+                    if not combined[col].isna().all():
+                        try:
+                            result = self.analyzer.analyze_twoway(
+                                combined, col, fa_col, fb_col, fa_name, fb_name
+                            )
+                            self.results.twoway_ratios[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (two-way): {e}")
+                del combined
+                gc.collect()
+                self._log(f"  Done: {len(self.results.twoway_ratios)} ratios analyzed")
 
-        # 5. Category sheets (one-way still generated for backward compat)
-        self.generate_all_sheets()
-        for cat_name, sheet in self.analysis_sheets.items():
-            if sheet.statistical_result:
-                self.results.category_results[cat_name] = sheet.statistical_result
+        elif section == 'percentages':
+            if self.percentages is not None:
+                self._log(f"Running two-way ANOVA for {len(self.percentages.columns)} percentages...")
+                combined = pd.concat([valid_data[[fa_col, fb_col]], self.percentages.loc[valid_data.index]], axis=1)
+                for col in self.percentages.columns:
+                    if not combined[col].isna().all():
+                        try:
+                            result = self.analyzer.analyze_twoway(
+                                combined, col, fa_col, fb_col, fa_name, fb_name
+                            )
+                            self.results.twoway_percentages[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (two-way): {e}")
+                del combined
+                gc.collect()
+                self._log(f"  Done: {len(self.results.twoway_percentages)} percentages analyzed")
 
-        return self.results
+        elif section == 'categories':
+            self._log("Running two-way ANOVA for category sheets...")
+            self.generate_all_sheets()
+            for cat_name, sheet in self.analysis_sheets.items():
+                if sheet.statistical_result:
+                    self.results.category_results[cat_name] = sheet.statistical_result
+            self._log(f"  Done: {len(self.results.category_results)} categories analyzed")
 
-    def _run_all_threeway_statistics(self, valid_data: pd.DataFrame) -> ComprehensiveAnalysisResults:
-        """
-        Run three-way ANOVA for all analytes when n_factors == 3.
-        """
+    # --- THREE-WAY sections ---
+
+    def _run_threeway_section(self, valid_data, section):
         factor_items = list(self.factors.items())
         fa_name, fa_col = factor_items[0]
         fb_name, fb_col = factor_items[1]
         fc_name, fc_col = factor_items[2]
 
-        self.results.is_threeway = True
-        self.results.factor_a_name = fa_name
-        self.results.factor_b_name = fb_name
-        self.results.factor_c_name = fc_name
-        self.results.factor_a_col = fa_col
-        self.results.factor_b_col = fb_col
-        self.results.factor_c_col = fc_col
-
-        # Verify factor columns exist in data
         if fa_col not in valid_data.columns or fb_col not in valid_data.columns or fc_col not in valid_data.columns:
             print(f"Factor columns not found in data: {fa_col}, {fb_col}, {fc_col}")
-            return self.results
+            return
 
-        # 1. Individual bile acids
-        for i, ba in enumerate(self.ba_cols):
-            if ba in valid_data.columns:
-                if self._should_exclude_for_lod(ba, valid_data):
-                    continue
-                try:
-                    result = self.analyzer.analyze_threeway(
-                        valid_data, ba, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
-                    )
-                    self.results.threeway_individual_ba[ba] = result
-                except Exception as e:
-                    print(f"Could not analyze {ba} (three-way): {e}")
-                if (i + 1) % 20 == 0:
-                    gc.collect()
-        gc.collect()
-
-        # 2. Totals
-        if self.totals is not None:
-            combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.totals.loc[valid_data.index]], axis=1)
-            for col in self.totals.columns:
-                if not combined[col].isna().all():
-                    if self._should_exclude_category_for_lod(col, valid_data):
+        if section == 'individual_ba':
+            self._log(f"Running three-way ANOVA ({fa_name}×{fb_name}×{fc_name}) for {len(self.ba_cols)} individual bile acids...")
+            for i, ba in enumerate(self.ba_cols):
+                if ba in valid_data.columns:
+                    if self._should_exclude_for_lod(ba, valid_data):
                         continue
                     try:
                         result = self.analyzer.analyze_threeway(
-                            combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                            valid_data, ba, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
                         )
-                        self.results.threeway_totals[col] = result
+                        self.results.threeway_individual_ba[ba] = result
                     except Exception as e:
-                        print(f"Could not analyze {col} (three-way): {e}")
-            del combined
+                        print(f"Could not analyze {ba} (three-way): {e}")
+                    if (i + 1) % 20 == 0:
+                        self._log(f"  Progress: {i + 1}/{len(self.ba_cols)} BAs...")
+                        gc.collect()
             gc.collect()
+            self._log(f"  Done: {len(self.results.threeway_individual_ba)} individual BAs analyzed")
 
-        # 3. Ratios
-        if self.ratios is not None:
-            combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.ratios.loc[valid_data.index]], axis=1)
-            for col in self.ratios.columns:
-                if not combined[col].isna().all():
-                    try:
-                        result = self.analyzer.analyze_threeway(
-                            combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
-                        )
-                        self.results.threeway_ratios[col] = result
-                    except Exception as e:
-                        print(f"Could not analyze {col} (three-way): {e}")
-            del combined
-            gc.collect()
+        elif section == 'totals':
+            if self.totals is not None:
+                self._log(f"Running three-way ANOVA for {len(self.totals.columns)} totals...")
+                combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.totals.loc[valid_data.index]], axis=1)
+                for col in self.totals.columns:
+                    if not combined[col].isna().all():
+                        if self._should_exclude_category_for_lod(col, valid_data):
+                            continue
+                        try:
+                            result = self.analyzer.analyze_threeway(
+                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                            )
+                            self.results.threeway_totals[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (three-way): {e}")
+                del combined
+                gc.collect()
+                self._log(f"  Done: {len(self.results.threeway_totals)} totals analyzed")
 
-        # 4. Percentages
-        if self.percentages is not None:
-            combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.percentages.loc[valid_data.index]], axis=1)
-            for col in self.percentages.columns:
-                if not combined[col].isna().all():
-                    try:
-                        result = self.analyzer.analyze_threeway(
-                            combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
-                        )
-                        self.results.threeway_percentages[col] = result
-                    except Exception as e:
-                        print(f"Could not analyze {col} (three-way): {e}")
-            del combined
-            gc.collect()
+        elif section == 'ratios':
+            if self.ratios is not None:
+                self._log(f"Running three-way ANOVA for {len(self.ratios.columns)} ratios...")
+                combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.ratios.loc[valid_data.index]], axis=1)
+                for col in self.ratios.columns:
+                    if not combined[col].isna().all():
+                        try:
+                            result = self.analyzer.analyze_threeway(
+                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                            )
+                            self.results.threeway_ratios[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (three-way): {e}")
+                del combined
+                gc.collect()
+                self._log(f"  Done: {len(self.results.threeway_ratios)} ratios analyzed")
 
-        # 5. Category sheets
-        self.generate_all_sheets()
-        for cat_name, sheet in self.analysis_sheets.items():
-            if sheet.statistical_result:
-                self.results.category_results[cat_name] = sheet.statistical_result
+        elif section == 'percentages':
+            if self.percentages is not None:
+                self._log(f"Running three-way ANOVA for {len(self.percentages.columns)} percentages...")
+                combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.percentages.loc[valid_data.index]], axis=1)
+                for col in self.percentages.columns:
+                    if not combined[col].isna().all():
+                        try:
+                            result = self.analyzer.analyze_threeway(
+                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                            )
+                            self.results.threeway_percentages[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (three-way): {e}")
+                del combined
+                gc.collect()
+                self._log(f"  Done: {len(self.results.threeway_percentages)} percentages analyzed")
 
-        return self.results
+        elif section == 'categories':
+            self._log("Running three-way ANOVA for category sheets...")
+            self.generate_all_sheets()
+            for cat_name, sheet in self.analysis_sheets.items():
+                if sheet.statistical_result:
+                    self.results.category_results[cat_name] = sheet.statistical_result
+            self._log(f"  Done: {len(self.results.category_results)} categories analyzed")
+
+    def run_all_statistics(self) -> ComprehensiveAnalysisResults:
+        """Run all statistical analyses at once (legacy entry point)."""
+        for section in ['individual_ba', 'totals', 'ratios', 'percentages', 'categories']:
+            self.run_section(section)
+        return self._finalize_results()
+
+    # Legacy methods removed — replaced by run_section() and section runners above.
 
     def _calculate_sheet_data(
         self,
