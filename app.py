@@ -5,6 +5,7 @@ Bile Acid Analysis Pipeline - Streamlit Application
 Run with: streamlit run app.py
 """
 
+import gc
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -109,10 +110,10 @@ def fig_to_bytes(fig, format='png', dpi=300):
 
 
 def store_figure(fig, name):
-    """Store a figure in session state."""
+    """Store a figure as PNG bytes in session state (not the raw object)."""
     if 'figures' not in st.session_state:
         st.session_state.figures = {}
-    st.session_state.figures[name] = fig
+    st.session_state.figures[name] = fig_to_bytes(fig, 'png', dpi=300)
 
 
 def _ensure_report_generator(processed, settings):
@@ -527,11 +528,14 @@ def create_results_zip(processed, results, figures, report_gen, settings=None):
             excel_buf.seek(0)
             zf.writestr('reports/statistical_report.xlsx', excel_buf.getvalue())
         
-        # Figures
+        # Figures — may be matplotlib objects or pre-rendered bytes
         for name, fig in figures.items():
             if fig:
-                zf.writestr(f'figures/{name}.png', fig_to_bytes(fig, 'png'))
-                zf.writestr(f'figures/{name}.pdf', fig_to_bytes(fig, 'pdf'))
+                if isinstance(fig, bytes):
+                    zf.writestr(f'figures/{name}.png', fig)
+                else:
+                    zf.writestr(f'figures/{name}.png', fig_to_bytes(fig, 'png'))
+                    zf.writestr(f'figures/{name}.pdf', fig_to_bytes(fig, 'pdf'))
     
     buf.seek(0)
     return buf.getvalue()
@@ -2137,6 +2141,9 @@ def main():
             needed = tab_sections.get(active_tab, [])
             missing = [s for s in needed if s not in st.session_state.stats_sections_done]
             if missing:
+                # Free memory from previous section before computing new one
+                plt.close('all')
+                gc.collect()
                 label = f"Computing {', '.join(missing)} statistics..."
                 with st.status(label, expanded=False) as status:
                     for sec in missing:

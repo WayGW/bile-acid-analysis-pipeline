@@ -371,7 +371,7 @@ class ExcelReportGenerator:
             n_samples: Total number of samples (for computing LOD percentages)
             lod_threshold: Exclude analytes with >= this % LOD-replaced from stats (0=disable)
         """
-        self.data = data.copy()
+        self.data = data  # Reference only — avoid copy to save memory on Cloud
         self.group_col = group_col
         self.sample_id_col = sample_id_col
         self.alpha = alpha
