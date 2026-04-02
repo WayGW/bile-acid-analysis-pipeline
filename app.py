@@ -110,10 +110,10 @@ def fig_to_bytes(fig, format='png', dpi=300):
 
 
 def store_figure(fig, name):
-    """Store a figure as PNG bytes in session state (not the raw object)."""
+    """Store a figure as PDF bytes in session state (not the raw object)."""
     if 'figures' not in st.session_state:
         st.session_state.figures = {}
-    st.session_state.figures[name] = fig_to_bytes(fig, 'png', dpi=300)
+    st.session_state.figures[name] = fig_to_bytes(fig, 'pdf')
 
 
 def _ensure_report_generator(processed, settings):
@@ -528,13 +528,12 @@ def create_results_zip(processed, results, figures, report_gen, settings=None):
             excel_buf.seek(0)
             zf.writestr('reports/statistical_report.xlsx', excel_buf.getvalue())
         
-        # Figures — may be matplotlib objects or pre-rendered bytes
+        # Figures — may be matplotlib objects or pre-rendered PDF bytes
         for name, fig in figures.items():
             if fig:
                 if isinstance(fig, bytes):
-                    zf.writestr(f'figures/{name}.png', fig)
+                    zf.writestr(f'figures/{name}.pdf', fig)
                 else:
-                    zf.writestr(f'figures/{name}.png', fig_to_bytes(fig, 'png'))
                     zf.writestr(f'figures/{name}.pdf', fig_to_bytes(fig, 'pdf'))
     
     buf.seek(0)
