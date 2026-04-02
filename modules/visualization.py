@@ -40,23 +40,6 @@ plt.rcParams.update({
     'axes.spines.right': False,
 })
 
-# Color palettes
-CONJUGATION_COLORS = {
-    'unconjugated': '#1f77b4',
-    'glycine': '#2ca02c',
-    'taurine': '#d62728',
-    'sulfated': '#9467bd',
-    'n-acyl': '#8c564b',
-}
-
-ORIGIN_COLORS = {
-    'primary': '#1f77b4',
-    'secondary': '#ff7f0e',
-}
-
-# Default palette - can be overridden
-DEFAULT_PALETTE = "Set2"
-
 
 def get_group_palette(palette_name: str = "Set2", n_colors: int = 10):
     """Get a color palette by name."""

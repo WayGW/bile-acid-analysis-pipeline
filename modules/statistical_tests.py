@@ -2467,52 +2467,6 @@ def format_twoway_apa(result: FullTwoWayAnalysisResult) -> str:
     return " ".join(parts)
 
 
-def format_twoway_report(result: FullTwoWayAnalysisResult) -> str:
-    """Generate a detailed human-readable report for two-way ANOVA results."""
-    lines = []
-    tw = result.twoway_result
-
-    lines.append(f"{'='*60}")
-    lines.append(f"TWO-WAY ANOVA: {result.variable_name}")
-    lines.append(f"{'='*60}")
-    lines.append(f"Test: {tw.test_type.value}")
-    lines.append(f"Factors: {tw.factor_a_name} × {tw.factor_b_name}")
-
-    if result.assumption_notes:
-        lines.append(f"\n--- ASSUMPTIONS ---")
-        lines.append(result.assumption_notes)
-
-    lines.append(f"\n--- ANOVA TABLE ---")
-    if tw.anova_table is not None:
-        lines.append(tw.anova_table.to_string(index=False))
-
-    lines.append(f"\n--- SIGNIFICANCE SUMMARY ---")
-    def _sig_stars(p):
-        if p < 0.001: return '***'
-        if p < 0.01: return '**'
-        if p < 0.05: return '*'
-        return 'n.s.'
-
-    lines.append(f"  {tw.factor_a_name}: p={tw.factor_a_pvalue:.4f} {_sig_stars(tw.factor_a_pvalue)}")
-    lines.append(f"  {tw.factor_b_name}: p={tw.factor_b_pvalue:.4f} {_sig_stars(tw.factor_b_pvalue)}")
-    lines.append(f"  {tw.factor_a_name}×{tw.factor_b_name}: p={tw.interaction_pvalue:.4f} {_sig_stars(tw.interaction_pvalue)}")
-
-    if result.descriptive_stats is not None:
-        cell_stats = result.descriptive_stats[result.descriptive_stats['factor_b'] != '__MARGINAL__']
-        cell_stats = cell_stats[cell_stats['factor_a'] != '__MARGINAL__']
-        lines.append(f"\n--- CELL DESCRIPTIVE STATISTICS ---")
-        lines.append(cell_stats.to_string(index=False))
-
-    if tw.posthoc_results is not None:
-        lines.append(f"\n--- POST-HOC ({tw.posthoc_type}) ---")
-        lines.append(tw.posthoc_results.to_string(index=False))
-
-    lines.append(f"\n--- APA SUMMARY ---")
-    lines.append(format_twoway_apa(result))
-
-    return "\n".join(lines)
-
-
 def format_threeway_apa(result: FullThreeWayAnalysisResult) -> str:
     """
     Generate APA-formatted text for three-way ANOVA results.
@@ -2585,60 +2539,6 @@ def format_threeway_apa(result: FullThreeWayAnalysisResult) -> str:
                            f"(corrected for multiple comparisons).")
 
     return " ".join(parts)
-
-
-def format_threeway_report(result: FullThreeWayAnalysisResult) -> str:
-    """Generate a detailed human-readable report for three-way ANOVA results."""
-    lines = []
-    tw = result.threeway_result
-
-    lines.append(f"{'='*60}")
-    lines.append(f"THREE-WAY ANOVA: {result.variable_name}")
-    lines.append(f"{'='*60}")
-    lines.append(f"Test: {tw.test_type.value}")
-    lines.append(f"Factors: {tw.factor_a_name} \u00d7 {tw.factor_b_name} \u00d7 {tw.factor_c_name}")
-
-    if result.assumption_notes:
-        lines.append(f"\n--- ASSUMPTIONS ---")
-        lines.append(result.assumption_notes)
-
-    lines.append(f"\n--- ANOVA TABLE ---")
-    if tw.anova_table is not None:
-        lines.append(tw.anova_table.to_string(index=False))
-
-    lines.append(f"\n--- SIGNIFICANCE SUMMARY ---")
-    def _sig_stars(p):
-        if np.isnan(p): return ''
-        if p < 0.001: return '***'
-        if p < 0.01: return '**'
-        if p < 0.05: return '*'
-        return 'n.s.'
-
-    lines.append(f"  {tw.factor_a_name}: p={tw.factor_a_pvalue:.4f} {_sig_stars(tw.factor_a_pvalue)}")
-    lines.append(f"  {tw.factor_b_name}: p={tw.factor_b_pvalue:.4f} {_sig_stars(tw.factor_b_pvalue)}")
-    lines.append(f"  {tw.factor_c_name}: p={tw.factor_c_pvalue:.4f} {_sig_stars(tw.factor_c_pvalue)}")
-    lines.append(f"  {tw.factor_a_name}\u00d7{tw.factor_b_name}: p={tw.interaction_ab_pvalue:.4f} {_sig_stars(tw.interaction_ab_pvalue)}")
-    lines.append(f"  {tw.factor_a_name}\u00d7{tw.factor_c_name}: p={tw.interaction_ac_pvalue:.4f} {_sig_stars(tw.interaction_ac_pvalue)}")
-    lines.append(f"  {tw.factor_b_name}\u00d7{tw.factor_c_name}: p={tw.interaction_bc_pvalue:.4f} {_sig_stars(tw.interaction_bc_pvalue)}")
-    lines.append(f"  {tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name}: p={tw.interaction_abc_pvalue:.4f} {_sig_stars(tw.interaction_abc_pvalue)}")
-
-    if result.descriptive_stats is not None:
-        cell_stats = result.descriptive_stats[
-            (result.descriptive_stats['factor_a'] != '__MARGINAL__') &
-            (result.descriptive_stats['factor_b'] != '__MARGINAL__') &
-            (result.descriptive_stats['factor_c'] != '__MARGINAL__')
-        ]
-        lines.append(f"\n--- CELL DESCRIPTIVE STATISTICS ---")
-        lines.append(cell_stats.to_string(index=False))
-
-    if tw.posthoc_results is not None:
-        lines.append(f"\n--- POST-HOC ({tw.posthoc_type}) ---")
-        lines.append(tw.posthoc_results.to_string(index=False))
-
-    lines.append(f"\n--- APA SUMMARY ---")
-    lines.append(format_threeway_apa(result))
-
-    return "\n".join(lines)
 
 
 if __name__ == "__main__":
