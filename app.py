@@ -2112,10 +2112,10 @@ def main():
         # Create example dataframe
         example_lcms_df = pd.DataFrame({
             'Data Filename': ['Std 1 ngmL', 'Std 3  ngmL', 'Std 10 ngmL'],
-            'C16 Cer': [1.3, 3.0, 9.9],
-            'C24-0 Cer': [1.1, 2.9, 10.1],
-            'C16-SM': ['----', 3.1, 10.0],
-            'S-d18-1': ['----', '----', 10.2],
+            'CA': [1.3, 3.0, 9.9],
+            'TCA': [1.1, 2.9, 10.1],
+            'GCA': ['----', 3.1, 10.0],
+            'TCDCA': ['----', '----', 10.2],
             '...': ['...', '...', '...']
         })
         st.dataframe(example_lcms_df.astype(str), hide_index=True, width="content")
