@@ -27,12 +27,13 @@ from config.bile_acid_species import (
     get_12alpha_hydroxylated, get_non12alpha_hydroxylated, get_sulfated
 )
 from modules.data_processing import BileAcidDataProcessor, ProcessedData, validate_data_quality
-from modules.statistical_tests import StatisticalAnalyzer, format_analysis_report, format_twoway_apa
+from modules.statistical_tests import StatisticalAnalyzer, format_analysis_report, format_twoway_apa, format_threeway_apa
 from modules.visualization import BileAcidVisualizer
 from modules.report_generation import (
     ExcelReportGenerator, SignificancePlotter,
     ComprehensiveAnalysisResults, format_apa_statistics,
-    get_significant_differences_summary, get_twoway_differences_summary
+    get_significant_differences_summary, get_twoway_differences_summary,
+    get_threeway_differences_summary
 )
 
 st.set_page_config(page_title="Bile Acid Analysis Pipeline", page_icon="🧬", layout="wide")
@@ -77,6 +78,7 @@ def get_data_affecting_settings(settings):
     """Extract settings that affect data processing and statistics."""
     return {
         'lod_handling': settings['lod_handling'],
+        'lod_threshold': settings.get('lod_threshold', 50),
         'alpha': settings['alpha']
     }
 
@@ -132,6 +134,10 @@ def compute_all_statistics(processed, settings):
         alpha=settings['alpha'],
         factors=factors,
         n_factors=n_factors,
+        analyte_lod_counts=getattr(processed.structure, 'analyte_lod_counts', {}),
+        analyte_lod_rows=getattr(processed.structure, 'analyte_lod_rows', {}),
+        n_samples=len(processed.sample_data),
+        lod_threshold=settings.get('lod_threshold', 50),
     )
     
     results = report_gen.run_all_statistics()
@@ -171,9 +177,87 @@ def generate_all_export_figures(processed, results, settings):
     data = data[data[group_col].astype(str).str.lower() != 'nan']
     available_bas = processed.structure.bile_acid_cols
 
+    is_threeway = getattr(results, 'is_threeway', False)
     is_twoway = results.is_twoway
 
-    if is_twoway:
+    if is_threeway:
+        # =====================================================================
+        # THREE-WAY ANOVA EXPORT FIGURES
+        # =====================================================================
+        fa_col, fb_col, fc_col = results.factor_a_col, results.factor_b_col, results.factor_c_col
+        fa_name, fb_name, fc_name = results.factor_a_name, results.factor_b_name, results.factor_c_name
+
+        conc_selections = {
+            'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
+            'significant': [b for b in available_bas if b in results.threeway_individual_ba
+                           and any(getattr(results.threeway_individual_ba[b].threeway_result, attr) < settings['alpha']
+                                   for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])][:10],
+            'primary': [b for b in get_primary() if b in available_bas][:10],
+            'secondary': [b for b in get_secondary() if b in available_bas][:10],
+        }
+
+        for sel_name, selected in conc_selections.items():
+            if not selected:
+                continue
+            tw_stats = {b: results.threeway_individual_ba.get(b) for b in selected
+                       if b in results.threeway_individual_ba}
+            suffix = f"_{sel_name}"
+            try:
+                fig = viz.plot_threeway_multi_panel(
+                    data=data, value_cols=selected,
+                    factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+                    threeway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+                    ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                    plot_type=settings['plot_type'])
+                figures[f'concentrations{suffix}'] = fig
+            except Exception:
+                pass
+
+        key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated',
+                      'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated',
+                      'sulfated', 'oxidized', 'epimerized', 'nor_bile_acids',
+                      'total_12alpha_hydroxylated', 'total_non12alpha_hydroxylated',
+                      'primary_conjugated', 'secondary_conjugated',
+                      'primary_unconjugated', 'secondary_unconjugated']
+        available_totals = [t for t in key_totals if t in processed.totals.columns]
+
+        if available_totals:
+            totals_data = pd.concat([data[[fa_col, fb_col, fc_col]].reset_index(drop=True),
+                                     processed.totals[available_totals].loc[data.index].reset_index(drop=True)], axis=1)
+            tw_stats = {t: results.threeway_totals.get(t) for t in available_totals
+                       if t in results.threeway_totals}
+            try:
+                fig = viz.plot_threeway_multi_panel(
+                    data=totals_data, value_cols=available_totals,
+                    factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+                    threeway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+                    ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                    plot_type=settings['plot_type'])
+                figures['totals'] = fig
+            except Exception:
+                pass
+
+        ratio_cols = [col for col in processed.ratios.columns if not processed.ratios[col].isna().all()]
+        if ratio_cols:
+            ratio_data = pd.concat([data[[fa_col, fb_col, fc_col]].reset_index(drop=True),
+                                    processed.ratios[ratio_cols].loc[data.index].reset_index(drop=True)], axis=1)
+            tw_stats = {r: results.threeway_ratios.get(r) for r in ratio_cols[:9]
+                       if r in results.threeway_ratios}
+            try:
+                fig = viz.plot_threeway_multi_panel(
+                    data=ratio_data, value_cols=ratio_cols[:9],
+                    factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+                    threeway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+                    ylabel='Ratio', show_points=settings['show_points'],
+                    plot_type=settings['plot_type'])
+                figures['ratios'] = fig
+            except Exception:
+                pass
+
+    elif is_twoway:
         # =====================================================================
         # TWO-WAY ANOVA EXPORT FIGURES
         # =====================================================================
@@ -533,6 +617,13 @@ def render_sidebar():
                                "zero": "Zero", "drop": "NaN (exclude)"}[x],
         help="LOD values are auto-detected per analyte from the LC-MS standards sheet"
     )
+    lod_threshold = st.sidebar.slider(
+        "LOD exclusion threshold (%)",
+        min_value=0, max_value=100, value=50, step=5,
+        help="Exclude analytes from statistical testing if ≥ this % of values "
+             "are below LOD. Set to 0 to disable. Uses modified rule: analyte is "
+             "kept if ANY group has ≥ (100 − threshold)% detected values."
+    )
     
     st.sidebar.markdown("### 📈 Analysis")
     alpha = st.sidebar.slider("Significance (α)", 0.01, 0.10, 0.05, 0.01)
@@ -564,7 +655,8 @@ def render_sidebar():
     plot_style = st.sidebar.selectbox("Plot background", list(style_options.keys()),
                                       format_func=lambda x: style_options[x])
     
-    return {'lod_handling': lod_handling, 'alpha': alpha, 'plot_type': plot_type,
+    return {'lod_handling': lod_handling, 'lod_threshold': lod_threshold,
+            'alpha': alpha, 'plot_type': plot_type,
             'show_points': show_points,
             'color_palette': color_palette, 'plot_style': plot_style}
 
@@ -584,6 +676,7 @@ def render_concentrations_tab(processed, settings):
     data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
     data = data[data[group_col].astype(str).str.lower() != 'nan']
     available_bas = processed.structure.bile_acid_cols
+    is_threeway = results is not None and getattr(results, 'is_threeway', False)
     is_twoway = results is not None and results.is_twoway
 
     quick = st.segmented_control("Quick select",
@@ -595,7 +688,11 @@ def render_concentrations_tab(processed, settings):
     if quick == "Top 10":
         selected = processed.concentrations.mean().nlargest(10).index.tolist()
     elif quick == "Significant":
-        if is_twoway:
+        if is_threeway:
+            selected = [b for b in available_bas if b in results.threeway_individual_ba
+                       and any(getattr(results.threeway_individual_ba[b].threeway_result, attr) < settings['alpha']
+                               for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])][:10]
+        elif is_twoway:
             selected = [b for b in available_bas if b in results.twoway_individual_ba
                        and (results.twoway_individual_ba[b].twoway_result.factor_a_pvalue < settings['alpha']
                             or results.twoway_individual_ba[b].twoway_result.factor_b_pvalue < settings['alpha']
@@ -635,8 +732,57 @@ def render_concentrations_tab(processed, settings):
 
     log_scale = st.checkbox("Log10 scale", key="conc_log")
 
+    # Show LOD exclusion notice if any selected analytes were excluded
+    lod_excluded = getattr(results, 'lod_excluded', {})
+    if lod_excluded and selected:
+        excluded_selected = {ba: pct for ba, pct in lod_excluded.items() if ba in selected}
+        if excluded_selected:
+            excl_list = ", ".join(f"{ba} ({pct}%)" for ba, pct in sorted(excluded_selected.items()))
+            st.info(
+                f"**LOD exclusion** (threshold: ≥{getattr(results, 'lod_threshold', 50)}% below LOD): "
+                f"The following analytes were excluded from statistical testing: {excl_list}. "
+                f"Plots are still shown but without ANOVA results."
+            )
+
     if selected:
-        if is_twoway:
+        if is_threeway:
+            # === THREE-WAY ANOVA PLOTS ===
+            fa_col, fb_col, fc_col = results.factor_a_col, results.factor_b_col, results.factor_c_col
+            fa_name, fb_name, fc_name = results.factor_a_name, results.factor_b_name, results.factor_c_name
+
+            st.markdown(f"**Three-way ANOVA**: {fa_name} x {fb_name} x {fc_name}")
+
+            tw_stats = {b: results.threeway_individual_ba.get(b) for b in selected
+                       if b in results.threeway_individual_ba}
+
+            fig = viz.plot_threeway_multi_panel(
+                data=data, value_cols=selected,
+                factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+                threeway_results=tw_stats, ncols=3,
+                factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+                ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                plot_type=settings['plot_type']
+            )
+            st.pyplot(fig)
+            store_figure(fig, 'concentrations_threeway')
+            plt.close(fig)
+
+            with st.expander("Interaction Plots"):
+                fig_int = viz.plot_threeway_interaction_multi_panel(
+                    data=data, value_cols=selected,
+                    factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+                    threeway_results=tw_stats, ncols=3,
+                    factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+                    ylabel='Concentration (nmol/L)'
+                )
+                st.pyplot(fig_int)
+                store_figure(fig_int, 'concentrations_threeway_interaction')
+                plt.close(fig_int)
+
+            with st.expander("Three-Way ANOVA Summary"):
+                if tw_stats:
+                    st.dataframe(get_threeway_differences_summary(tw_stats), hide_index=True)
+        elif is_twoway:
             # === TWO-WAY ANOVA PLOTS ===
             fa_col = results.factor_a_col
             fb_col = results.factor_b_col
@@ -709,14 +855,42 @@ def render_totals_tab(processed, settings):
 
     data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
     data = data[data[group_col].astype(str).str.lower() != 'nan']
+    is_threeway = results is not None and getattr(results, 'is_threeway', False)
     is_twoway = results is not None and results.is_twoway
 
     log_scale = st.checkbox("Log10 scale", key="totals_log")
 
     key_totals = ['total_all', 'total_primary', 'total_secondary', 'total_conjugated',
-                  'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated']
+                  'total_unconjugated', 'glycine_conjugated', 'taurine_conjugated',
+                  'sulfated', 'oxidized', 'epimerized', 'nor_bile_acids',
+                  'total_12alpha_hydroxylated', 'total_non12alpha_hydroxylated',
+                  'primary_conjugated', 'secondary_conjugated',
+                  'primary_unconjugated', 'secondary_unconjugated']
 
-    if is_twoway:
+    if is_threeway:
+        fa_col, fb_col, fc_col = results.factor_a_col, results.factor_b_col, results.factor_c_col
+        fa_name, fb_name, fc_name = results.factor_a_name, results.factor_b_name, results.factor_c_name
+        combined = pd.concat([data[[fa_col, fb_col, fc_col]], processed.totals.loc[data.index]], axis=1)
+        available = [t for t in key_totals if t in combined.columns]
+
+        tw_stats = {t: results.threeway_totals.get(t) for t in available if t in results.threeway_totals}
+
+        fig = viz.plot_threeway_multi_panel(
+            data=combined, value_cols=available,
+            factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+            threeway_results=tw_stats, ncols=3,
+            factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+            ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+            plot_type=settings['plot_type']
+        )
+        st.pyplot(fig)
+        store_figure(fig, 'totals')
+        plt.close(fig)
+
+        with st.expander("Three-Way ANOVA Summary"):
+            if tw_stats:
+                st.dataframe(get_threeway_differences_summary(tw_stats), hide_index=True)
+    elif is_twoway:
         fa_col = results.factor_a_col
         fb_col = results.factor_b_col
         combined = pd.concat([data[[fa_col, fb_col]], processed.totals.loc[data.index]], axis=1)
@@ -733,7 +907,7 @@ def render_totals_tab(processed, settings):
             plot_type=settings['plot_type']
         )
         st.pyplot(fig)
-        store_figure(fig, 'totals_twoway')
+        store_figure(fig, 'totals')
         plt.close(fig)
 
         with st.expander("Two-Way ANOVA Summary"):
@@ -779,7 +953,13 @@ def render_totals_tab(processed, settings):
     st.caption("Within-category breakdown: individual bile acids as percentage of each category total")
 
     ba_names = processed.structure.bile_acid_cols
-    if is_twoway:
+    if is_threeway:
+        cat_pie_data = data.copy()
+        cat_group_col = '_factorial_group_'
+        cat_pie_data[cat_group_col] = (cat_pie_data[results.factor_a_col].astype(str) + ' - '
+                                       + cat_pie_data[results.factor_b_col].astype(str) + ' - '
+                                       + cat_pie_data[results.factor_c_col].astype(str))
+    elif is_twoway:
         cat_pie_data = data.copy()
         cat_group_col = '_factorial_group_'
         cat_pie_data[cat_group_col] = cat_pie_data[fa_col].astype(str) + ' - ' + cat_pie_data[fb_col].astype(str)
@@ -818,6 +998,7 @@ def render_percentages_tab(processed, settings):
     # Get available percentage columns (remove _pct suffix for display)
     pct_cols = [c for c in percentages.columns if c.endswith('_pct')]
     ba_names = [c.replace('_pct', '') for c in pct_cols]
+    is_threeway = results is not None and getattr(results, 'is_threeway', False)
     is_twoway = results is not None and results.is_twoway
 
     quick = st.pills("Quick select",
@@ -834,7 +1015,11 @@ def render_percentages_tab(processed, settings):
         top_pcts = percentages[pct_cols].mean().nlargest(10).index.tolist()
         selected_pct_cols = top_pcts
     elif quick == "Significant":
-        if is_twoway:
+        if is_threeway:
+            selected_pct_cols = [c for c in pct_cols if c in results.threeway_percentages
+                               and any(getattr(results.threeway_percentages[c].threeway_result, attr) < settings['alpha']
+                                       for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])][:10]
+        elif is_twoway:
             selected_pct_cols = [c for c in pct_cols if c in results.twoway_percentages
                                and (results.twoway_percentages[c].twoway_result.factor_a_pvalue < settings['alpha']
                                     or results.twoway_percentages[c].twoway_result.factor_b_pvalue < settings['alpha']
@@ -878,7 +1063,11 @@ def render_percentages_tab(processed, settings):
         return
 
     # Show significant findings summary
-    if is_twoway:
+    if is_threeway:
+        sig_pcts = [c for c in selected_pct_cols if c in results.threeway_percentages
+                   and any(getattr(results.threeway_percentages[c].threeway_result, attr) < settings['alpha']
+                           for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
+    elif is_twoway:
         sig_pcts = [c for c in selected_pct_cols if c in results.twoway_percentages
                    and (results.twoway_percentages[c].twoway_result.factor_a_pvalue < settings['alpha']
                         or results.twoway_percentages[c].twoway_result.factor_b_pvalue < settings['alpha']
@@ -899,7 +1088,40 @@ def render_percentages_tab(processed, settings):
     # =========================================================================
     st.markdown("#### Statistical Comparison by Group")
 
-    if is_twoway:
+    if is_threeway:
+        fa_col, fb_col, fc_col = results.factor_a_col, results.factor_b_col, results.factor_c_col
+        fa_name, fb_name, fc_name = results.factor_a_name, results.factor_b_name, results.factor_c_name
+
+        st.markdown(f"**Three-way ANOVA**: {fa_name} x {fb_name} x {fc_name}")
+
+        tw_stats = {c.replace('_pct', ''): results.threeway_percentages.get(c)
+                   for c in selected_pct_cols if c in results.threeway_percentages}
+
+        pct_plot_data = pd.concat([data[[fa_col, fb_col, fc_col]].reset_index(drop=True),
+                                   percentages[selected_pct_cols].reset_index(drop=True)], axis=1)
+        pct_plot_data = pct_plot_data.rename(columns=display_cols)
+
+        try:
+            fig = viz.plot_threeway_multi_panel(
+                data=pct_plot_data, value_cols=display_names,
+                factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+                threeway_results=tw_stats, ncols=3,
+                factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+                ylabel='% of Total BA', show_points=settings['show_points'],
+                plot_type=settings['plot_type']
+            )
+            st.pyplot(fig)
+            store_figure(fig, 'percentages_threeway')
+            plt.close(fig)
+        except Exception as e:
+            st.warning(f"Could not generate three-way percentage plot: {e}")
+
+        with st.expander("Three-Way ANOVA Summary"):
+            tw_stats_orig = {c: results.threeway_percentages.get(c)
+                           for c in selected_pct_cols if c in results.threeway_percentages}
+            if tw_stats_orig:
+                st.dataframe(get_threeway_differences_summary(tw_stats_orig), hide_index=True)
+    elif is_twoway:
         fa_col = results.factor_a_col
         fb_col = results.factor_b_col
         fa_name = results.factor_a_name
@@ -964,7 +1186,16 @@ def render_percentages_tab(processed, settings):
     st.markdown("#### Pool Composition - Pie Charts")
     st.caption("Visual breakdown of bile acid pool for each group (top contributors)")
 
-    if is_twoway:
+    if is_threeway:
+        # Create combined group column for composition charts
+        comp_group_col = '_factorial_group_'
+        comp_data = data.copy()
+        comp_data[comp_group_col] = (comp_data[results.factor_a_col].astype(str) + ' - '
+                                     + comp_data[results.factor_b_col].astype(str) + ' - '
+                                     + comp_data[results.factor_c_col].astype(str))
+        pie_df = pd.concat([comp_data[[comp_group_col]].reset_index(drop=True),
+                           percentages[pct_cols].reset_index(drop=True)], axis=1)
+    elif is_twoway:
         # Create combined group column for composition charts
         comp_group_col = '_factorial_group_'
         comp_data = data.copy()
@@ -1021,7 +1252,12 @@ def render_percentages_tab(processed, settings):
     # SECTION 5: Statistical Summary Table
     # =========================================================================
     with st.expander("📊 Statistical Summary"):
-        if is_twoway:
+        if is_threeway:
+            tw_stats_all = {c: results.threeway_percentages.get(c)
+                           for c in selected_pct_cols if c in results.threeway_percentages}
+            if tw_stats_all:
+                st.dataframe(get_threeway_differences_summary(tw_stats_all), hide_index=True)
+        elif is_twoway:
             tw_stats_all = {c: results.twoway_percentages.get(c)
                            for c in selected_pct_cols if c in results.twoway_percentages}
             if tw_stats_all:
@@ -1049,7 +1285,30 @@ def render_percentages_tab(processed, settings):
 
     # Group mean percentages table
     with st.expander("📈 Group Mean Percentages"):
-        if is_twoway:
+        if is_threeway:
+            comp_group_col_summary = '_factorial_group_'
+            summary_df_tw = pd.concat([data[[results.factor_a_col, results.factor_b_col, results.factor_c_col]].reset_index(drop=True),
+                                       percentages[selected_pct_cols].reset_index(drop=True)], axis=1)
+            summary_df_tw[comp_group_col_summary] = (summary_df_tw[results.factor_a_col].astype(str) + ' - '
+                                                     + summary_df_tw[results.factor_b_col].astype(str) + ' - '
+                                                     + summary_df_tw[results.factor_c_col].astype(str))
+            summary_data = []
+            for pct_col in selected_pct_cols:
+                ba_name = pct_col.replace('_pct', '')
+                for group in summary_df_tw[comp_group_col_summary].unique():
+                    group_data = summary_df_tw[summary_df_tw[comp_group_col_summary] == group][pct_col]
+                    summary_data.append({
+                        'Bile Acid': ba_name,
+                        'Group': group,
+                        'Mean %': f"{group_data.mean():.2f}",
+                        'SD': f"{group_data.std():.2f}",
+                        'Median %': f"{group_data.median():.2f}"
+                    })
+            if summary_data:
+                pivot_df = pd.DataFrame(summary_data).pivot_table(
+                    index='Bile Acid', columns='Group', values='Mean %', aggfunc='first')
+                st.dataframe(pivot_df, width="stretch")
+        elif is_twoway:
             comp_group_col_summary = '_factorial_group_'
             summary_df_tw = pd.concat([data[[results.factor_a_col, results.factor_b_col]].reset_index(drop=True),
                                        percentages[selected_pct_cols].reset_index(drop=True)], axis=1)
@@ -1090,7 +1349,11 @@ def render_percentages_tab(processed, settings):
 
     # Raw data view
     with st.expander("📋 View percentage data"):
-        if is_twoway:
+        if is_threeway:
+            view_df = pd.concat([data[[results.factor_a_col, results.factor_b_col, results.factor_c_col]].reset_index(drop=True),
+                                percentages[selected_pct_cols].reset_index(drop=True)], axis=1)
+            st.dataframe(view_df, width="stretch")
+        elif is_twoway:
             view_df = pd.concat([data[[results.factor_a_col, results.factor_b_col]].reset_index(drop=True),
                                 percentages[selected_pct_cols].reset_index(drop=True)], axis=1)
             st.dataframe(view_df, width="stretch")
@@ -1105,6 +1368,7 @@ def render_ratios_tab(processed, settings):
     viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
     group_col = processed.structure.group_col
     results = st.session_state.analysis_results
+    is_threeway = results is not None and getattr(results, 'is_threeway', False)
     is_twoway = results is not None and results.is_twoway
 
     if not group_col:
@@ -1114,7 +1378,10 @@ def render_ratios_tab(processed, settings):
     data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
     data = data[data[group_col].astype(str).str.lower() != 'nan']
 
-    if is_twoway:
+    if is_threeway:
+        fa_col, fb_col, fc_col = results.factor_a_col, results.factor_b_col, results.factor_c_col
+        combined = pd.concat([data[[fa_col, fb_col, fc_col]], processed.ratios.loc[data.index]], axis=1)
+    elif is_twoway:
         fa_col = results.factor_a_col
         fb_col = results.factor_b_col
         combined = pd.concat([data[[fa_col, fb_col]], processed.ratios.loc[data.index]], axis=1)
@@ -1141,7 +1408,11 @@ def render_ratios_tab(processed, settings):
     if quick == "All ratios":
         selected_ratios = available
     elif quick == "Significant only":
-        if is_twoway:
+        if is_threeway:
+            selected_ratios = [r for r in available if r in results.threeway_ratios
+                             and any(getattr(results.threeway_ratios[r].threeway_result, attr) < settings['alpha']
+                                     for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
+        elif is_twoway:
             selected_ratios = [r for r in available if r in results.twoway_ratios
                              and (results.twoway_ratios[r].twoway_result.factor_a_pvalue < settings['alpha']
                                   or results.twoway_ratios[r].twoway_result.factor_b_pvalue < settings['alpha']
@@ -1166,7 +1437,11 @@ def render_ratios_tab(processed, settings):
         return
 
     # Show significant findings
-    if is_twoway:
+    if is_threeway:
+        sig_ratios = [r for r in selected_ratios if r in results.threeway_ratios
+                     and any(getattr(results.threeway_ratios[r].threeway_result, attr) < settings['alpha']
+                             for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
+    elif is_twoway:
         sig_ratios = [r for r in selected_ratios if r in results.twoway_ratios
                      and (results.twoway_ratios[r].twoway_result.factor_a_pvalue < settings['alpha']
                           or results.twoway_ratios[r].twoway_result.factor_b_pvalue < settings['alpha']
@@ -1179,7 +1454,41 @@ def render_ratios_tab(processed, settings):
 
     log_scale = st.checkbox("Log₁₀ scale", key="ratio_log")
 
-    if is_twoway:
+    if is_threeway:
+        fa_name, fb_name, fc_name = results.factor_a_name, results.factor_b_name, results.factor_c_name
+        st.markdown(f"**Three-way ANOVA**: {fa_name} x {fb_name} x {fc_name}")
+
+        tw_stats = {r: results.threeway_ratios.get(r) for r in selected_ratios
+                   if r in results.threeway_ratios}
+
+        fig = viz.plot_threeway_multi_panel(
+            data=combined, value_cols=selected_ratios,
+            factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+            threeway_results=tw_stats, ncols=3,
+            factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+            ylabel='Ratio', show_points=settings['show_points'],
+            plot_type=settings['plot_type']
+        )
+        st.pyplot(fig)
+        store_figure(fig, 'ratios_threeway')
+        plt.close(fig)
+
+        with st.expander("Interaction Plots"):
+            fig_int = viz.plot_threeway_interaction_multi_panel(
+                data=combined, value_cols=selected_ratios,
+                factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+                threeway_results=tw_stats, ncols=3,
+                factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+                ylabel='Ratio'
+            )
+            st.pyplot(fig_int)
+            store_figure(fig_int, 'ratios_threeway_interaction')
+            plt.close(fig_int)
+
+        with st.expander("Three-Way ANOVA Summary"):
+            if tw_stats:
+                st.dataframe(get_threeway_differences_summary(tw_stats), hide_index=True)
+    elif is_twoway:
         fa_name = results.factor_a_name
         fb_name = results.factor_b_name
         st.markdown(f"**Two-way ANOVA**: {fa_name} x {fb_name}")
@@ -1278,7 +1587,9 @@ def render_ratios_tab(processed, settings):
 
     # Raw data
     with st.expander("📋 View ratio data"):
-        if is_twoway:
+        if is_threeway:
+            display_cols = [fa_col, fb_col, fc_col] + selected_ratios
+        elif is_twoway:
             display_cols = [fa_col, fb_col] + selected_ratios
         else:
             display_cols = [group_col] + selected_ratios
@@ -1296,14 +1607,86 @@ def _count_sig_twoway(twoway_dict, alpha=0.05):
     return count
 
 
+def _count_sig_threeway(threeway_dict, alpha=0.05):
+    """Count significant results in a three-way ANOVA results dictionary."""
+    count = 0
+    for res in threeway_dict.values():
+        if any(getattr(res.threeway_result, attr) < alpha
+               for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue']):
+            count += 1
+    return count
+
+
 def render_statistics_tab(processed, settings):
     """Statistics summary tab."""
     st.markdown("### Statistics Summary")
     results = st.session_state.analysis_results
+    is_threeway = results is not None and getattr(results, 'is_threeway', False)
     is_twoway = results is not None and results.is_twoway
     alpha = settings['alpha']
 
-    if is_twoway:
+    if is_threeway:
+        sig_t = _count_sig_threeway(results.threeway_totals, alpha)
+        sig_b = _count_sig_threeway(results.threeway_individual_ba, alpha)
+        sig_p = _count_sig_threeway(results.threeway_percentages, alpha)
+        sig_r = _count_sig_threeway(results.threeway_ratios, alpha)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Sig. Totals", f"{sig_t}/{len(results.threeway_totals)}")
+        c2.metric("Sig. BAs", f"{sig_b}/{len(results.threeway_individual_ba)}")
+        c3.metric("Sig. Percentages", f"{sig_p}/{len(results.threeway_percentages)}")
+        c4.metric("Sig. Ratios", f"{sig_r}/{len(results.threeway_ratios)}")
+
+        st.markdown(f"**Design**: {results.factor_a_name} x {results.factor_b_name} x {results.factor_c_name} (Three-Way ANOVA)")
+
+        st.markdown("#### Totals")
+        if results.threeway_totals:
+            st.dataframe(get_threeway_differences_summary(results.threeway_totals), hide_index=True)
+
+        st.markdown("#### Individual BAs")
+        if results.threeway_individual_ba:
+            sig_ba_tw = {k: v for k, v in results.threeway_individual_ba.items()
+                        if any(getattr(v.threeway_result, attr) < alpha
+                               for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])}
+            if sig_ba_tw:
+                st.dataframe(get_threeway_differences_summary(sig_ba_tw), hide_index=True)
+            else:
+                st.info("No significant individual BA differences.")
+
+        st.markdown("#### Percentages")
+        if results.threeway_percentages:
+            sig_pct_tw = {k.replace('_pct', ''): v for k, v in results.threeway_percentages.items()
+                         if any(getattr(v.threeway_result, attr) < alpha
+                                for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])}
+            if sig_pct_tw:
+                st.dataframe(get_threeway_differences_summary(sig_pct_tw), hide_index=True)
+            else:
+                st.info("No significant percentage differences.")
+
+        st.markdown("#### Ratios")
+        if results.threeway_ratios:
+            sig_rat_tw = {k: v for k, v in results.threeway_ratios.items()
+                         if any(getattr(v.threeway_result, attr) < alpha
+                                for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])}
+            if sig_rat_tw:
+                st.dataframe(get_threeway_differences_summary(sig_rat_tw), hide_index=True)
+            else:
+                st.info("No significant ratio differences.")
+
+        # APA report
+        with st.expander("📝 APA-Formatted Report"):
+            for category, tw_dict, label in [
+                ("Totals", results.threeway_totals, "totals"),
+                ("Individual BAs", results.threeway_individual_ba, "individual"),
+                ("Ratios", results.threeway_ratios, "ratios"),
+            ]:
+                if tw_dict:
+                    st.markdown(f"**{category}:**")
+                    for name, res in tw_dict.items():
+                        apa = format_threeway_apa(res)
+                        if apa:
+                            st.markdown(f"*{name}*: {apa}")
+    elif is_twoway:
         sig_t = _count_sig_twoway(results.twoway_totals, alpha)
         sig_b = _count_sig_twoway(results.twoway_individual_ba, alpha)
         sig_p = _count_sig_twoway(results.twoway_percentages, alpha)
@@ -1667,7 +2050,12 @@ def main():
         st.caption(f"📊 LOD: **{lod_source_label}** (below-LOD → {lod_display[settings['lod_handling']]}) | α = **{settings['alpha']}**")
 
         # Show factor detection info
-        if processed.structure.n_factors >= 2:
+        if processed.structure.n_factors >= 3:
+            factor_names = list(processed.structure.factors.keys())
+            source_label = {"metadata_sheet": "metadata sheet", "prefix_columns": "Factor_ columns"}.get(
+                processed.structure.factor_source, "unknown")
+            st.info(f"🔬 **Three-way design detected** ({source_label}): **{factor_names[0]}** × **{factor_names[1]}** × **{factor_names[2]}**")
+        elif processed.structure.n_factors >= 2:
             factor_names = list(processed.structure.factors.keys())
             source_label = {"metadata_sheet": "metadata sheet", "prefix_columns": "Factor_ columns"}.get(
                 processed.structure.factor_source, "unknown")
@@ -1747,14 +2135,29 @@ def main():
         example_df = pd.DataFrame({
             'Type': ['Aged-1', 'Aged-2', 'Young-1'],
             'Sample_ID': ['S001', 'S002', 'S003'],
-            'C16 Cer': [125.4, 142.8, 98.6],
-            'C24-0 Cer': [312.5, 287.9, '-----'],
-            'C16-SM': [1520.3, 1380.7, 1245.2],
-            'S-d18-1': [15.2, 18.4, 12.8],
+            'CA': [125.4, 142.8, 98.6],
+            'TCA': [312.5, 287.9, '-----'],
+            'GCA': [1520.3, 1380.7, 1245.2],
+            'TCDCA': [15.2, 18.4, 12.8],
             '...': ['...', '...', '...']
         })
         st.dataframe(example_df.astype(str), hide_index=True, width="content")
         
+        st.markdown("""**For Multiple Independent Variables need to add "Factor_" in front of it""")
+        st.markdown("**Example:**")
+        # Create example dataframe
+        example_df = pd.DataFrame({
+            'Factor_Age': ['Aged', 'Aged', 'Young'],
+            'Factor_Sex': ['Male', 'Female', 'Female'],
+            'Sample_ID': ['S001', 'S002', 'S003'],
+            'CA': [125.4, 142.8, 98.6],
+            'TCA': [312.5, 287.9, '-----'],
+            'GCA': [1520.3, 1380.7, 1245.2],
+            'TCDCA': [15.2, 18.4, 12.8],
+            '...': ['...', '...', '...']
+        })
+        st.dataframe(example_df.astype(str), hide_index=True, width='content')
+
         st.info("💡 The pipeline auto-detects bile acid columns and group assignments from your data.")
 
 

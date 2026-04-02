@@ -32,7 +32,8 @@ from config.bile_acid_species import (
 )
 from modules.statistical_tests import (
     StatisticalAnalyzer, FullAnalysisResult,
-    TwoWayResult, FullTwoWayAnalysisResult, format_twoway_apa
+    TwoWayResult, FullTwoWayAnalysisResult, format_twoway_apa,
+    ThreeWayResult, FullThreeWayAnalysisResult, format_threeway_apa
 )
 
 
@@ -55,6 +56,19 @@ class ComprehensiveAnalysisResults:
     factor_b_name: str = ""
     factor_a_col: str = ""
     factor_b_col: str = ""
+
+    # Three-way ANOVA results (populated when n_factors == 3)
+    is_threeway: bool = False
+    threeway_individual_ba: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
+    threeway_totals: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
+    threeway_ratios: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
+    threeway_percentages: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
+    factor_c_name: str = ""
+    factor_c_col: str = ""
+
+    # LOD exclusion tracking
+    lod_excluded: Dict[str, float] = field(default_factory=dict)  # {analyte: lod_pct}
+    lod_threshold: int = 50
 
 
 @dataclass
@@ -186,6 +200,55 @@ def get_twoway_differences_summary(results: Dict[str, FullTwoWayAnalysisResult])
     return pd.DataFrame(rows)
 
 
+def get_threeway_differences_summary(results: Dict[str, FullThreeWayAnalysisResult]) -> pd.DataFrame:
+    """Create summary table of three-way ANOVA results across all analytes."""
+    rows = []
+    for name, result in results.items():
+        if result is None:
+            continue
+
+        tw = result.threeway_result
+
+        def _stars(p):
+            if np.isnan(p): return ''
+            if p < 0.001: return '***'
+            if p < 0.01: return '**'
+            if p < 0.05: return '*'
+            return ''
+
+        def _fmt(val):
+            return f"{val:.2f}" if not np.isnan(val) else 'N/A'
+
+        def _fmt_p(val):
+            return f"{val:.4f}" if not np.isnan(val) else 'N/A'
+
+        n_sig_posthoc = 0
+        if tw.posthoc_results is not None:
+            n_sig_posthoc = tw.posthoc_results['significant'].sum()
+
+        rows.append({
+            'Variable': name,
+            'Test': tw.test_type.value,
+            f'{tw.factor_a_name} F': _fmt(tw.factor_a_stat),
+            f'{tw.factor_a_name} p': _fmt_p(tw.factor_a_pvalue),
+            f'{tw.factor_a_name} sig': _stars(tw.factor_a_pvalue),
+            f'{tw.factor_b_name} F': _fmt(tw.factor_b_stat),
+            f'{tw.factor_b_name} p': _fmt_p(tw.factor_b_pvalue),
+            f'{tw.factor_b_name} sig': _stars(tw.factor_b_pvalue),
+            f'{tw.factor_c_name} F': _fmt(tw.factor_c_stat),
+            f'{tw.factor_c_name} p': _fmt_p(tw.factor_c_pvalue),
+            f'{tw.factor_c_name} sig': _stars(tw.factor_c_pvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_b_name} p': _fmt_p(tw.interaction_ab_pvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_c_name} p': _fmt_p(tw.interaction_ac_pvalue),
+            f'{tw.factor_b_name}\u00d7{tw.factor_c_name} p': _fmt_p(tw.interaction_bc_pvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name} p': _fmt_p(tw.interaction_abc_pvalue),
+            'Post-hoc type': tw.posthoc_type,
+            'Sig. post-hoc pairs': n_sig_posthoc,
+        })
+
+    return pd.DataFrame(rows)
+
+
 class ExcelReportGenerator:
     """
     Generate organized Excel reports with multiple sheets.
@@ -282,6 +345,11 @@ class ExcelReportGenerator:
         # Two-way ANOVA factor info
         factors: Optional[Dict[str, str]] = None,  # {display_name: column_name}
         n_factors: int = 0,
+        # LOD exclusion settings
+        analyte_lod_counts: Optional[Dict[str, int]] = None,
+        analyte_lod_rows: Optional[Dict[str, List[int]]] = None,
+        n_samples: int = 0,
+        lod_threshold: int = 50,
     ):
         """
         Initialize report generator.
@@ -297,6 +365,10 @@ class ExcelReportGenerator:
             alpha: Significance level for statistical tests
             factors: Dict of {factor_display_name: factor_column_name} for two-way ANOVA
             n_factors: Number of factors (0=auto, 1=one-way, 2=two-way)
+            analyte_lod_counts: Dict of {analyte_name: count_of_lod_replaced_values}
+            analyte_lod_rows: Dict of {analyte_name: [row_indices_with_lod_replacement]}
+            n_samples: Total number of samples (for computing LOD percentages)
+            lod_threshold: Exclude analytes with >= this % LOD-replaced from stats (0=disable)
         """
         self.data = data.copy()
         self.group_col = group_col
@@ -310,6 +382,13 @@ class ExcelReportGenerator:
         self.factors = factors or {}
         self.n_factors = n_factors
 
+        # LOD exclusion settings
+        self.analyte_lod_counts = analyte_lod_counts or {}
+        self.analyte_lod_rows = analyte_lod_rows or {}
+        self.n_samples = n_samples if n_samples > 0 else len(data)
+        self.lod_threshold = lod_threshold
+        self.lod_excluded: Dict[str, float] = {}  # {analyte: lod_pct} for excluded analytes
+
         # Identify bile acid columns
         if bile_acid_cols:
             self.ba_cols = [c for c in bile_acid_cols if c in data.columns]
@@ -320,7 +399,97 @@ class ExcelReportGenerator:
         self.analyzer = StatisticalAnalyzer(alpha=alpha)
         self.analysis_sheets: Dict[str, AnalysisSheet] = {}
         self.results = ComprehensiveAnalysisResults()
+
+    def _should_exclude_for_lod(self, col: str, data: pd.DataFrame = None) -> bool:
+        """
+        Check if an analyte should be excluded from statistical testing
+        due to high LOD replacement rate.
+
+        Uses the modified rule: an analyte is KEPT if any single group
+        has >= (100 - threshold)% detected (non-LOD) values. This preserves
+        analytes where detection rate varies meaningfully across groups
+        (e.g., detected in treatment but not control).
+
+        Returns True if the analyte should be EXCLUDED.
+        """
+        if self.lod_threshold <= 0:
+            return False  # Threshold disabled
+
+        lod_count = self.analyte_lod_counts.get(col, 0)
+        if lod_count == 0:
+            return False  # No LOD replacements
+
+        # Global LOD percentage
+        lod_pct = (lod_count / self.n_samples * 100) if self.n_samples > 0 else 0
+
+        if lod_pct < self.lod_threshold:
+            return False  # Below threshold globally
+
+        # Modified rule: check per-group using LOD row indices
+        lod_row_set = set(self.analyte_lod_rows.get(col, []))
+        if lod_row_set and data is not None and self.group_col in data.columns:
+            min_detected_pct = 100 - self.lod_threshold
+            for group_name, group_df in data.groupby(self.group_col):
+                n_group = len(group_df)
+                if n_group == 0:
+                    continue
+                # Count how many of this group's rows are LOD-replaced
+                n_lod_in_group = len(lod_row_set.intersection(group_df.index))
+                group_detected_pct = ((n_group - n_lod_in_group) / n_group * 100)
+                # If this group has enough detected values, keep the analyte
+                if group_detected_pct >= min_detected_pct:
+                    return False
+
+        # Exceeded threshold in all groups — exclude
+        self.lod_excluded[col] = round(lod_pct, 1)
+        return True
     
+    def _should_exclude_category_for_lod(self, category_col: str, data: pd.DataFrame = None) -> bool:
+        """
+        Check if a totals category should be excluded from statistical testing
+        based on the LOD status of its constituent bile acids.
+
+        A category is excluded if the proportion of its constituent BAs that were
+        LOD-excluded (or would be) meets or exceeds the LOD threshold. This prevents
+        categories like nor_bile_acids from showing significance when nearly all
+        constituent BAs are LOD-replaced.
+        """
+        if self.lod_threshold <= 0:
+            return False
+
+        # Look up constituent BAs for this category
+        if category_col == 'total_all':
+            constituent_bas = [c for c in self.ba_cols if c in (self.data.columns if data is None else data.columns)]
+        elif category_col in ANALYSIS_GROUPS:
+            constituent_bas = [c for c in ANALYSIS_GROUPS[category_col] if c in self.ba_cols]
+        else:
+            return False  # Unknown category, don't exclude
+
+        if not constituent_bas:
+            return False
+
+        # Count how many constituents are LOD-excluded or would be
+        n_excluded = 0
+        for ba in constituent_bas:
+            if ba in self.lod_excluded:
+                n_excluded += 1
+            elif self._should_exclude_for_lod(ba, data):
+                # This BA wasn't checked yet but would be excluded
+                n_excluded += 1
+
+        excluded_pct = (n_excluded / len(constituent_bas)) * 100
+        if excluded_pct >= self.lod_threshold:
+            self.lod_excluded[category_col] = round(excluded_pct, 1)
+            return True
+
+        return False
+
+    def _finalize_results(self) -> ComprehensiveAnalysisResults:
+        """Attach LOD exclusion info to results before returning."""
+        self.results.lod_excluded = self.lod_excluded.copy()
+        self.results.lod_threshold = self.lod_threshold
+        return self.results
+
     def run_all_statistics(self) -> ComprehensiveAnalysisResults:
         """Run all statistical analyses and cache results."""
         # Filter valid groups
@@ -328,10 +497,18 @@ class ExcelReportGenerator:
         valid_data = valid_data[valid_data[self.group_col].astype(str).str.lower() != 'nan']
 
         # ================================================================
+        # THREE-WAY BRANCH: if n_factors == 3, use three-way ANOVA
+        # ================================================================
+        if self.n_factors == 3 and len(self.factors) >= 3:
+            self._run_all_threeway_statistics(valid_data)
+            return self._finalize_results()
+
+        # ================================================================
         # TWO-WAY BRANCH: if n_factors == 2, use two-way ANOVA for all
         # ================================================================
         if self.n_factors == 2 and len(self.factors) >= 2:
-            return self._run_all_twoway_statistics(valid_data)
+            self._run_all_twoway_statistics(valid_data)
+            return self._finalize_results()
 
         # ================================================================
         # ONE-WAY BRANCH: existing code path (completely unchanged)
@@ -340,6 +517,8 @@ class ExcelReportGenerator:
         # 1. Individual bile acids
         for ba in self.ba_cols:
             if ba in valid_data.columns:
+                if self._should_exclude_for_lod(ba, valid_data):
+                    continue
                 try:
                     result = self.analyzer.analyze(valid_data, ba, self.group_col)
                     self.results.individual_ba_results[ba] = result
@@ -351,6 +530,8 @@ class ExcelReportGenerator:
             combined = pd.concat([valid_data[[self.group_col]], self.totals.loc[valid_data.index]], axis=1)
             for col in self.totals.columns:
                 if not combined[col].isna().all():
+                    if self._should_exclude_category_for_lod(col, valid_data):
+                        continue
                     try:
                         result = self.analyzer.analyze(combined, col, self.group_col)
                         self.results.totals_results[col] = result
@@ -384,8 +565,8 @@ class ExcelReportGenerator:
         for cat_name, sheet in self.analysis_sheets.items():
             if sheet.statistical_result:
                 self.results.category_results[cat_name] = sheet.statistical_result
-        
-        return self.results
+
+        return self._finalize_results()
 
     def _run_all_twoway_statistics(self, valid_data: pd.DataFrame) -> ComprehensiveAnalysisResults:
         """
@@ -412,6 +593,8 @@ class ExcelReportGenerator:
         # 1. Individual bile acids
         for ba in self.ba_cols:
             if ba in valid_data.columns:
+                if self._should_exclude_for_lod(ba, valid_data):
+                    continue
                 try:
                     result = self.analyzer.analyze_twoway(
                         valid_data, ba, fa_col, fb_col, fa_name, fb_name
@@ -425,6 +608,8 @@ class ExcelReportGenerator:
             combined = pd.concat([valid_data[[fa_col, fb_col]], self.totals.loc[valid_data.index]], axis=1)
             for col in self.totals.columns:
                 if not combined[col].isna().all():
+                    if self._should_exclude_category_for_lod(col, valid_data):
+                        continue
                     try:
                         result = self.analyzer.analyze_twoway(
                             combined, col, fa_col, fb_col, fa_name, fb_name
@@ -467,6 +652,90 @@ class ExcelReportGenerator:
 
         return self.results
 
+    def _run_all_threeway_statistics(self, valid_data: pd.DataFrame) -> ComprehensiveAnalysisResults:
+        """
+        Run three-way ANOVA for all analytes when n_factors == 3.
+        """
+        factor_items = list(self.factors.items())
+        fa_name, fa_col = factor_items[0]
+        fb_name, fb_col = factor_items[1]
+        fc_name, fc_col = factor_items[2]
+
+        self.results.is_threeway = True
+        self.results.factor_a_name = fa_name
+        self.results.factor_b_name = fb_name
+        self.results.factor_c_name = fc_name
+        self.results.factor_a_col = fa_col
+        self.results.factor_b_col = fb_col
+        self.results.factor_c_col = fc_col
+
+        # Verify factor columns exist in data
+        if fa_col not in valid_data.columns or fb_col not in valid_data.columns or fc_col not in valid_data.columns:
+            print(f"Factor columns not found in data: {fa_col}, {fb_col}, {fc_col}")
+            return self.results
+
+        # 1. Individual bile acids
+        for ba in self.ba_cols:
+            if ba in valid_data.columns:
+                if self._should_exclude_for_lod(ba, valid_data):
+                    continue
+                try:
+                    result = self.analyzer.analyze_threeway(
+                        valid_data, ba, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                    )
+                    self.results.threeway_individual_ba[ba] = result
+                except Exception as e:
+                    print(f"Could not analyze {ba} (three-way): {e}")
+
+        # 2. Totals
+        if self.totals is not None:
+            combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.totals.loc[valid_data.index]], axis=1)
+            for col in self.totals.columns:
+                if not combined[col].isna().all():
+                    if self._should_exclude_category_for_lod(col, valid_data):
+                        continue
+                    try:
+                        result = self.analyzer.analyze_threeway(
+                            combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                        )
+                        self.results.threeway_totals[col] = result
+                    except Exception as e:
+                        print(f"Could not analyze {col} (three-way): {e}")
+
+        # 3. Ratios
+        if self.ratios is not None:
+            combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.ratios.loc[valid_data.index]], axis=1)
+            for col in self.ratios.columns:
+                if not combined[col].isna().all():
+                    try:
+                        result = self.analyzer.analyze_threeway(
+                            combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                        )
+                        self.results.threeway_ratios[col] = result
+                    except Exception as e:
+                        print(f"Could not analyze {col} (three-way): {e}")
+
+        # 4. Percentages
+        if self.percentages is not None:
+            combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.percentages.loc[valid_data.index]], axis=1)
+            for col in self.percentages.columns:
+                if not combined[col].isna().all():
+                    try:
+                        result = self.analyzer.analyze_threeway(
+                            combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                        )
+                        self.results.threeway_percentages[col] = result
+                    except Exception as e:
+                        print(f"Could not analyze {col} (three-way): {e}")
+
+        # 5. Category sheets
+        self.generate_all_sheets()
+        for cat_name, sheet in self.analysis_sheets.items():
+            if sheet.statistical_result:
+                self.results.category_results[cat_name] = sheet.statistical_result
+
+        return self.results
+
     def _calculate_sheet_data(
         self,
         category_name: str,
@@ -501,7 +770,13 @@ class ExcelReportGenerator:
         if self.n_factors >= 2 and len(self.factors) >= 2:
             factor_cols = [fc for fc in self.factors.values() if fc in raw_data.columns]
             factor_names = list(self.factors.keys())
-            if len(factor_cols) >= 2:
+            if len(factor_cols) >= 3:
+                raw_data['_factorial_group_'] = (raw_data[factor_cols[0]].astype(str) + ' / ' +
+                                                 raw_data[factor_cols[1]].astype(str) + ' / ' +
+                                                 raw_data[factor_cols[2]].astype(str))
+                summary_group_col = '_factorial_group_'
+                summary_group_label = f'{factor_names[0]} / {factor_names[1]} / {factor_names[2]}'
+            elif len(factor_cols) >= 2:
                 raw_data['_factorial_group_'] = raw_data[factor_cols[0]].astype(str) + ' / ' + raw_data[factor_cols[1]].astype(str)
                 summary_group_col = '_factorial_group_'
                 summary_group_label = f'{factor_names[0]} / {factor_names[1]}'
@@ -540,7 +815,20 @@ class ExcelReportGenerator:
 
         # Statistical analysis
         stat_result = None
-        if self.n_factors >= 2 and len(self.factors) >= 2:
+        if self.n_factors >= 3 and len(self.factors) >= 3:
+            # Three-way mode: run three-way ANOVA on the category total
+            factor_cols_list = list(self.factors.values())
+            factor_names_list = list(self.factors.keys())
+            fa_col, fb_col, fc_col = factor_cols_list[0], factor_cols_list[1], factor_cols_list[2]
+            fa_name, fb_name, fc_name = factor_names_list[0], factor_names_list[1], factor_names_list[2]
+            if fa_col in raw_data.columns and fb_col in raw_data.columns and fc_col in raw_data.columns:
+                try:
+                    stat_result = self.analyzer.analyze_threeway(
+                        raw_data, 'Total', fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                    )
+                except Exception as e:
+                    print(f"Could not run three-way ANOVA for {category_name}: {e}")
+        elif self.n_factors >= 2 and len(self.factors) >= 2:
             # Two-way mode: run two-way ANOVA on the category total
             factor_cols_list = list(self.factors.values())
             fa_col = factor_cols_list[0]
@@ -648,8 +936,57 @@ class ExcelReportGenerator:
                                    index=False, header=False)
             current_row += 1
 
-            # Check if this is a two-way result or one-way result
-            if isinstance(result, FullTwoWayAnalysisResult):
+            # Check if this is a three-way, two-way, or one-way result
+            if isinstance(result, FullThreeWayAnalysisResult):
+                # ============================================================
+                # THREE-WAY ANOVA RESULTS
+                # ============================================================
+                tw = result.threeway_result
+                fa_name = self.results.factor_a_name or 'Factor A'
+                fb_name = self.results.factor_b_name or 'Factor B'
+                fc_name = self.results.factor_c_name or 'Factor C'
+
+                test_label = pd.DataFrame({'': [f'Test: {tw.test_type.value} ({fa_name} \u00d7 {fb_name} \u00d7 {fc_name})']})
+                test_label.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                                   index=False, header=False)
+                current_row += 1
+
+                apa_text = format_threeway_apa(result)
+                apa_df = pd.DataFrame({'APA Format': [apa_text]})
+                apa_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+                current_row += 2
+
+                if tw.anova_table is not None and not tw.anova_table.empty:
+                    anova_header = pd.DataFrame({'': ['ANOVA Table']})
+                    anova_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                                         index=False, header=False)
+                    current_row += 1
+                    tw.anova_table.to_excel(writer, sheet_name=sheet_name,
+                                            startrow=current_row, index=False)
+                    current_row += len(tw.anova_table) + 1
+
+                if result.descriptive_stats is not None and not result.descriptive_stats.empty:
+                    desc = result.descriptive_stats.copy()
+                    desc = desc[(desc['factor_a'] != '__MARGINAL__') &
+                                (desc['factor_b'] != '__MARGINAL__') &
+                                (desc['factor_c'] != '__MARGINAL__')]
+                    if not desc.empty:
+                        desc_header = pd.DataFrame({'': ['Cell Descriptive Statistics']})
+                        desc_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                                            index=False, header=False)
+                        current_row += 1
+                        desc.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+                        current_row += len(desc) + 1
+
+                if tw.posthoc_results is not None and not tw.posthoc_results.empty:
+                    ph_header = pd.DataFrame({'': [f'Post-hoc: {tw.posthoc_type}']})
+                    ph_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                                      index=False, header=False)
+                    current_row += 1
+                    tw.posthoc_results.to_excel(writer, sheet_name=sheet_name,
+                                                startrow=current_row, index=False)
+
+            elif isinstance(result, FullTwoWayAnalysisResult):
                 # ============================================================
                 # TWO-WAY ANOVA RESULTS
                 # ============================================================
@@ -779,7 +1116,41 @@ class ExcelReportGenerator:
             self.generate_all_sheets()
 
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-            if self.n_factors >= 2 and self.results.is_twoway:
+            if self.n_factors >= 3 and self.results.is_threeway:
+                # ============================================================
+                # THREE-WAY ANOVA REPORT
+                # ============================================================
+                self._write_threeway_overview_sheet(writer)
+
+                if self.results.threeway_individual_ba:
+                    self._write_threeway_results_sheet(
+                        writer, 'Individual_BA',
+                        'Individual Bile Acid Three-Way ANOVA',
+                        self.results.threeway_individual_ba
+                    )
+                if self.results.threeway_totals:
+                    self._write_threeway_results_sheet(
+                        writer, 'Totals',
+                        'Total Bile Acid Categories Three-Way ANOVA',
+                        self.results.threeway_totals
+                    )
+                if self.results.threeway_ratios:
+                    self._write_threeway_results_sheet(
+                        writer, 'Ratios',
+                        'Clinical Ratios Three-Way ANOVA',
+                        self.results.threeway_ratios
+                    )
+                if self.results.threeway_percentages:
+                    self._write_threeway_results_sheet(
+                        writer, 'Percentages',
+                        'Bile Acid Percentages Three-Way ANOVA',
+                        self.results.threeway_percentages
+                    )
+
+                for sheet_name, sheet in self.analysis_sheets.items():
+                    self._write_sheet(writer, sheet)
+
+            elif self.n_factors >= 2 and self.results.is_twoway:
                 # ============================================================
                 # TWO-WAY ANOVA REPORT
                 # ============================================================
@@ -845,19 +1216,39 @@ class ExcelReportGenerator:
         current_row += 2
         
         # Data summary
+        _excl_ba = {k: v for k, v in self.lod_excluded.items() if k in self.ba_cols}
+        _excl_cat = {k: v for k, v in self.lod_excluded.items() if k not in self.ba_cols}
+        lod_params = ['LOD Exclusion Threshold', 'Analytes Excluded (LOD)', 'Categories Excluded (LOD)'] if self.lod_threshold > 0 else []
+        lod_values = [
+            f'{self.lod_threshold}% replacement',
+            f'{len(_excl_ba)} of {len(self.ba_cols)} ({len(_excl_ba)/len(self.ba_cols)*100:.1f}%)' if self.ba_cols else '0',
+            f'{len(_excl_cat)}' if _excl_cat else 'None'
+        ] if self.lod_threshold > 0 else []
         summary_data = {
-            'Parameter': ['Total Samples', 'Groups', 'Bile Acids Measured', 'Significance Level'],
+            'Parameter': ['Total Samples', 'Groups', 'Bile Acids Measured', 'Significance Level'] + lod_params,
             'Value': [
                 len(self.data),
                 ', '.join(self.data[self.group_col].unique().astype(str)),
                 len(self.ba_cols),
                 f"α = {self.alpha}"
-            ]
+            ] + lod_values
         }
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Overview', startrow=current_row, index=False)
-        current_row += 6
-        
+        current_row += len(summary_df) + 2
+
+        # LOD excluded analytes detail table
+        if self.lod_excluded:
+            lod_header = pd.DataFrame({'': ['LOD-EXCLUDED ANALYTES']})
+            lod_header.to_excel(writer, sheet_name='Overview', startrow=current_row,
+                               index=False, header=False)
+            current_row += 1
+            lod_detail_rows = [{'Analyte': col, 'LOD %': f'{pct}%', 'Type': 'Category' if col in ANALYSIS_GROUPS or col == 'total_all' else 'Individual'}
+                               for col, pct in sorted(self.lod_excluded.items())]
+            lod_detail_df = pd.DataFrame(lod_detail_rows)
+            lod_detail_df.to_excel(writer, sheet_name='Overview', startrow=current_row, index=False)
+            current_row += len(lod_detail_df) + 2
+
         # Results summary table
         section_header = pd.DataFrame({'': ['RESULTS SUMMARY']})
         section_header.to_excel(writer, sheet_name='Overview', startrow=current_row,
@@ -921,23 +1312,43 @@ class ExcelReportGenerator:
                 n = len(valid_data[(valid_data[fa_col].astype(str) == a) & (valid_data[fb_col].astype(str) == b)])
                 cell_sizes.append(f"{a}-{b}: n={n}")
 
+        _excl_ba_tw = {k: v for k, v in self.lod_excluded.items() if k in self.ba_cols}
+        _excl_cat_tw = {k: v for k, v in self.lod_excluded.items() if k not in self.ba_cols}
+        lod_params_tw = ['LOD Exclusion Threshold', 'Analytes Excluded (LOD)', 'Categories Excluded (LOD)'] if self.lod_threshold > 0 else []
+        lod_values_tw = [
+            f'{self.lod_threshold}% replacement',
+            f'{len(_excl_ba_tw)} of {len(self.ba_cols)} ({len(_excl_ba_tw)/len(self.ba_cols)*100:.1f}%)' if self.ba_cols else '0',
+            f'{len(_excl_cat_tw)}' if _excl_cat_tw else 'None'
+        ] if self.lod_threshold > 0 else []
         summary_data = {
             'Parameter': [
                 'Total Samples', 'Experimental Design',
                 f'Factor A: {fa_name}', f'Factor B: {fb_name}',
                 'Cell Sizes', 'Bile Acids Measured',
                 'Significance Level', 'Non-parametric Method'
-            ],
+            ] + lod_params_tw,
             'Value': [
                 len(valid_data), f'{fa_name} x {fb_name} factorial',
                 ', '.join(fa_levels), ', '.join(fb_levels),
                 '; '.join(cell_sizes), len(self.ba_cols),
                 f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)'
-            ]
+            ] + lod_values_tw
         }
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
         current_row += len(summary_df) + 3
+
+        # LOD excluded analytes detail table
+        if self.lod_excluded:
+            lod_header = pd.DataFrame({'': ['LOD-EXCLUDED ANALYTES']})
+            lod_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                               index=False, header=False)
+            current_row += 1
+            lod_detail_rows = [{'Analyte': col, 'LOD %': f'{pct}%', 'Type': 'Category' if col in ANALYSIS_GROUPS or col == 'total_all' else 'Individual'}
+                               for col, pct in sorted(self.lod_excluded.items())]
+            lod_detail_df = pd.DataFrame(lod_detail_rows)
+            lod_detail_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+            current_row += len(lod_detail_df) + 3
 
         # SUMMARY TABLE: Individual Bile Acids
         section_header = pd.DataFrame({'': ['INDIVIDUAL BILE ACID RESULTS SUMMARY']})
@@ -1113,6 +1524,199 @@ class ExcelReportGenerator:
                 current_row += len(tw.posthoc_results) + 1
 
             current_row += 1  # Extra spacing between variables
+
+        # Auto-adjust column widths
+        ws = writer.sheets[sheet_name]
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            ws.column_dimensions[column_letter].width = min(max_length + 2, 50)
+
+    def _write_threeway_overview_sheet(self, writer: pd.ExcelWriter):
+        """Write overview sheet for three-way ANOVA report."""
+        current_row = 0
+        sheet_name = 'Overview'
+
+        title_df = pd.DataFrame({'': ['BILE ACID ANALYSIS REPORT \u2014 THREE-WAY ANOVA']})
+        title_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                         index=False, header=False)
+        current_row += 2
+
+        fa_name = self.results.factor_a_name
+        fb_name = self.results.factor_b_name
+        fc_name = self.results.factor_c_name
+        fa_col = self.results.factor_a_col
+        fb_col = self.results.factor_b_col
+        fc_col = self.results.factor_c_col
+
+        valid_data = self.data[self.data[self.group_col].notna()].copy()
+        valid_data = valid_data[valid_data[self.group_col].astype(str).str.lower() != 'nan']
+
+        fa_levels = sorted(valid_data[fa_col].unique().astype(str))
+        fb_levels = sorted(valid_data[fb_col].unique().astype(str))
+        fc_levels = sorted(valid_data[fc_col].unique().astype(str))
+
+        _excl_ba_3w = {k: v for k, v in self.lod_excluded.items() if k in self.ba_cols}
+        _excl_cat_3w = {k: v for k, v in self.lod_excluded.items() if k not in self.ba_cols}
+        lod_params_3w = ['LOD Exclusion Threshold', 'Analytes Excluded (LOD)', 'Categories Excluded (LOD)'] if self.lod_threshold > 0 else []
+        lod_values_3w = [
+            f'{self.lod_threshold}% replacement',
+            f'{len(_excl_ba_3w)} of {len(self.ba_cols)} ({len(_excl_ba_3w)/len(self.ba_cols)*100:.1f}%)' if self.ba_cols else '0',
+            f'{len(_excl_cat_3w)}' if _excl_cat_3w else 'None'
+        ] if self.lod_threshold > 0 else []
+        summary_data = {
+            'Parameter': [
+                'Total Samples', 'Experimental Design',
+                f'Factor A: {fa_name}', f'Factor B: {fb_name}', f'Factor C: {fc_name}',
+                'Bile Acids Measured', 'Significance Level', 'Non-parametric Method'
+            ] + lod_params_3w,
+            'Value': [
+                len(valid_data), f'{fa_name} x {fb_name} x {fc_name} factorial',
+                ', '.join(fa_levels), ', '.join(fb_levels), ', '.join(fc_levels),
+                len(self.ba_cols), f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)'
+            ] + lod_values_3w
+        }
+        summary_df = pd.DataFrame(summary_data)
+        summary_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+        current_row += len(summary_df) + 3
+
+        # LOD excluded analytes detail table
+        if self.lod_excluded:
+            lod_header = pd.DataFrame({'': ['LOD-EXCLUDED ANALYTES']})
+            lod_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                               index=False, header=False)
+            current_row += 1
+            lod_detail_rows = [{'Analyte': col, 'LOD %': f'{pct}%', 'Type': 'Category' if col in ANALYSIS_GROUPS or col == 'total_all' else 'Individual'}
+                               for col, pct in sorted(self.lod_excluded.items())]
+            lod_detail_df = pd.DataFrame(lod_detail_rows)
+            lod_detail_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+            current_row += len(lod_detail_df) + 3
+
+        for section_title, results_dict in [
+            ('INDIVIDUAL BILE ACID RESULTS SUMMARY', self.results.threeway_individual_ba),
+            ('TOTAL CATEGORIES RESULTS SUMMARY', self.results.threeway_totals),
+            ('CLINICAL RATIOS RESULTS SUMMARY', self.results.threeway_ratios),
+            ('PERCENTAGE COMPOSITION RESULTS SUMMARY', self.results.threeway_percentages),
+        ]:
+            section_header = pd.DataFrame({'': [section_title]})
+            section_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                                   index=False, header=False)
+            current_row += 1
+            if results_dict:
+                summary = get_threeway_differences_summary(results_dict)
+                summary.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+                current_row += len(summary) + 3
+            else:
+                current_row += 2
+
+        # Auto-adjust column widths
+        ws = writer.sheets[sheet_name]
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            ws.column_dimensions[column_letter].width = min(max_length + 2, 60)
+
+    def _write_threeway_results_sheet(
+        self,
+        writer: pd.ExcelWriter,
+        sheet_name: str,
+        title: str,
+        tw_results: Dict[str, 'FullThreeWayAnalysisResult']
+    ):
+        """Write a three-way ANOVA results sheet for a category of variables."""
+        sheet_name = sheet_name[:31]
+        current_row = 0
+
+        fa_name = self.results.factor_a_name
+        fb_name = self.results.factor_b_name
+        fc_name = self.results.factor_c_name
+
+        title_df = pd.DataFrame({'': [title]})
+        title_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                         index=False, header=False)
+        current_row += 1
+        design_df = pd.DataFrame({'': [f'Design: {fa_name} x {fb_name} x {fc_name}']})
+        design_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                         index=False, header=False)
+        current_row += 2
+
+        # Summary table
+        section_header = pd.DataFrame({'': ['OMNIBUS RESULTS SUMMARY']})
+        section_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                               index=False, header=False)
+        current_row += 1
+
+        summary = get_threeway_differences_summary(tw_results)
+        summary.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+        current_row += len(summary) + 3
+
+        # Detailed ANOVA tables
+        section_header = pd.DataFrame({'': ['DETAILED ANOVA TABLES']})
+        section_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                               index=False, header=False)
+        current_row += 2
+
+        for var_name, result in tw_results.items():
+            tw = result.threeway_result
+
+            var_header = pd.DataFrame({'': [f'--- {var_name} ---']})
+            var_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                               index=False, header=False)
+            current_row += 1
+
+            test_label = pd.DataFrame({'': [f'Test: {tw.test_type.value}']})
+            test_label.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                               index=False, header=False)
+            current_row += 1
+
+            if tw.anova_table is not None and not tw.anova_table.empty:
+                tw.anova_table.to_excel(writer, sheet_name=sheet_name,
+                                        startrow=current_row, index=False)
+                current_row += len(tw.anova_table) + 1
+
+            # APA formatted result
+            apa_text = format_threeway_apa(result)
+            apa_df = pd.DataFrame({'APA Format': [apa_text]})
+            apa_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+            current_row += 2
+
+            # Cell descriptive stats
+            if result.descriptive_stats is not None and not result.descriptive_stats.empty:
+                desc = result.descriptive_stats.copy()
+                desc = desc[(desc['factor_a'] != '__MARGINAL__') &
+                            (desc['factor_b'] != '__MARGINAL__') &
+                            (desc['factor_c'] != '__MARGINAL__')]
+                if not desc.empty:
+                    desc_header = pd.DataFrame({'': ['Cell Descriptive Statistics']})
+                    desc_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                                        index=False, header=False)
+                    current_row += 1
+                    desc.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+                    current_row += len(desc) + 1
+
+            # Post-hoc results
+            if tw.posthoc_results is not None and not tw.posthoc_results.empty:
+                ph_header = pd.DataFrame({'': [f'Post-hoc: {tw.posthoc_type}']})
+                ph_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                                  index=False, header=False)
+                current_row += 1
+                tw.posthoc_results.to_excel(writer, sheet_name=sheet_name,
+                                            startrow=current_row, index=False)
+                current_row += len(tw.posthoc_results) + 1
+
+            current_row += 1
 
         # Auto-adjust column widths
         ws = writer.sheets[sheet_name]

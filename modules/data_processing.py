@@ -50,7 +50,7 @@ class DataStructureInfo:
 
     # Two-way ANOVA factor detection
     factors: Dict[str, str] = field(default_factory=dict)  # {display_name: column_name}
-    n_factors: int = 0  # 0 = no factors detected, 1 = one-way, 2 = two-way
+    n_factors: int = 0  # 0 = no factors, 1 = one-way, 2 = two-way, 3 = three-way
     factor_source: str = ""  # "metadata_sheet", "prefix_columns", or ""
 
 
@@ -1009,7 +1009,7 @@ class BileAcidDataProcessor:
 
         if meta_factors:
             structure.factors = meta_factors
-            structure.n_factors = min(len(meta_factors), 2)
+            structure.n_factors = min(len(meta_factors), 3)
             structure.factor_source = "metadata_sheet"
             clean_df = self._merge_metadata_factors(clean_df, structure)
             print(f"Detected {len(meta_factors)} factor(s) from metadata sheet: {list(meta_factors.keys())}")
@@ -1018,7 +1018,7 @@ class BileAcidDataProcessor:
             prefix_factors = self._detect_factor_prefix_columns(clean_df, structure)
             if prefix_factors:
                 structure.factors = prefix_factors
-                structure.n_factors = min(len(prefix_factors), 2)
+                structure.n_factors = min(len(prefix_factors), 3)
                 structure.factor_source = "prefix_columns"
                 print(f"Detected {len(prefix_factors)} factor(s) from column prefixes: {list(prefix_factors.keys())}")
 
