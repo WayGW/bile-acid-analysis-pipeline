@@ -2188,7 +2188,7 @@ def main():
         st.markdown("### LC-MS sheet")
         st.markdown("""
         - **Rows:** First few are Std curves, followed by samples
-        - **Columns:** "Data Filename" (Std curve and sample names), followed by sphingolipid species
+        - **Columns:** "Data Filename" (Std curve and sample names), followed by bile acid species
         """)
 
 
@@ -2208,7 +2208,7 @@ def main():
         st.markdown("### Sample sheet")
         st.markdown("""
         - **Rows:** Samples
-        - **Columns:** Sphingolipid species (matching panel names)
+        - **Columns:** Bile acid species (matching panel names)
         - **First column(s):** Sample ID, Group/Type
         - **Values:** Concentrations (typically ng/mL)
         - **Below LOD:** Can be "-----", "LOD", "BLQ", "ND", etc.
