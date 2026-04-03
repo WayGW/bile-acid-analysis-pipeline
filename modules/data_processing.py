@@ -1022,6 +1022,15 @@ class BileAcidDataProcessor:
                 structure.factor_source = "prefix_columns"
                 print(f"Detected {len(prefix_factors)} factor(s) from column prefixes: {list(prefix_factors.keys())}")
 
+        # Synthesize group column from factors when no explicit group column exists
+        if structure.factors and not structure.group_col:
+            factor_col_names = list(structure.factors.values())
+            synthetic_col = '_group_'
+            clean_df[synthetic_col] = clean_df[factor_col_names[0]].astype(str)
+            for fc in factor_col_names[1:]:
+                clean_df[synthetic_col] = clean_df[synthetic_col] + ' - ' + clean_df[fc].astype(str)
+            structure.group_col = synthetic_col
+
         # Extract sample data (with metadata)
         sample_df = clean_df.copy()
         
