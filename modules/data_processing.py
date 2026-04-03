@@ -886,7 +886,7 @@ class BileAcidDataProcessor:
         lod_value: float = 0.1
     ) -> pd.DataFrame:
         """
-        Calculate clinical ratios.
+        Calculate ratios.
         
         Note: Below-LOD values should already be replaced with LOD value
         during data cleaning. This function handles any remaining zeros

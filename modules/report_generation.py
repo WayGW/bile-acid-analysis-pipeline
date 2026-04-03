@@ -1211,7 +1211,7 @@ class ExcelReportGenerator:
                 if self.results.threeway_ratios:
                     self._write_threeway_results_sheet(
                         writer, 'Ratios',
-                        'Clinical Ratios Three-Way ANOVA',
+                        'Ratios Three-Way ANOVA',
                         self.results.threeway_ratios
                     )
                 if self.results.threeway_percentages:
@@ -1250,7 +1250,7 @@ class ExcelReportGenerator:
                 if self.results.twoway_ratios:
                     self._write_twoway_results_sheet(
                         writer, 'Ratios',
-                        'Clinical Ratios Two-Way ANOVA',
+                        'Ratios Two-Way ANOVA',
                         self.results.twoway_ratios
                     )
 
@@ -1447,7 +1447,7 @@ class ExcelReportGenerator:
             current_row += len(summary) + 3
 
         # SUMMARY TABLE: Ratios
-        section_header = pd.DataFrame({'': ['CLINICAL RATIOS RESULTS SUMMARY']})
+        section_header = pd.DataFrame({'': ['RATIOS RESULTS SUMMARY']})
         section_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
                                index=False, header=False)
         current_row += 1
@@ -1675,7 +1675,7 @@ class ExcelReportGenerator:
         for section_title, results_dict in [
             ('INDIVIDUAL BILE ACID RESULTS SUMMARY', self.results.threeway_individual_ba),
             ('TOTAL CATEGORIES RESULTS SUMMARY', self.results.threeway_totals),
-            ('CLINICAL RATIOS RESULTS SUMMARY', self.results.threeway_ratios),
+            ('RATIOS RESULTS SUMMARY', self.results.threeway_ratios),
             ('PERCENTAGE COMPOSITION RESULTS SUMMARY', self.results.threeway_percentages),
         ]:
             section_header = pd.DataFrame({'': [section_title]})

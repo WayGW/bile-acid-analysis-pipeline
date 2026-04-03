@@ -1396,7 +1396,7 @@ def render_percentages_tab(processed, settings):
 
 def render_ratios_tab(processed, settings):
     """Render ratios tab with multi-panel display."""
-    st.markdown("### Clinical Ratios")
+    st.markdown("### Ratios")
 
     viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
     group_col = processed.structure.group_col
@@ -1432,7 +1432,7 @@ def render_ratios_tab(processed, settings):
                                   ["All ratios", "Significant only", "Key ratios", "Custom"],
                                   default="All ratios", key="ratio_quick")
 
-    # Define key clinical ratios
+    # Define key ratios
     key_ratios = ['primary_to_secondary', 'glycine_to_taurine', 'conjugated_to_unconjugated',
                   '12alpha_to_non12alpha', 'primary_conjugated_to_secondary_conjugated',
                   'primary_unconjugated_to_secondary_unconjugated',
