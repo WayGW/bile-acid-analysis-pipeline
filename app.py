@@ -978,36 +978,37 @@ def render_totals_tab(processed, settings):
             st.dataframe(pd.DataFrame(rows), hide_index=True)
 
     # =========================================================================
-    # Category Composition Pie Charts
+    # Category Composition Pie Charts (on-demand to save memory)
     # =========================================================================
     st.markdown("---")
     st.markdown("#### Category Composition - Pie Charts")
     st.caption("Within-category breakdown: individual bile acids as percentage of each category total")
 
-    ba_names = processed.structure.bile_acid_cols
-    if is_threeway:
-        cat_pie_data = data.copy()
-        cat_group_col = '_factorial_group_'
-        cat_pie_data[cat_group_col] = (cat_pie_data[results.factor_a_col].astype(str) + ' - '
-                                       + cat_pie_data[results.factor_b_col].astype(str) + ' - '
-                                       + cat_pie_data[results.factor_c_col].astype(str))
-    elif is_twoway:
-        cat_pie_data = data.copy()
-        cat_group_col = '_factorial_group_'
-        cat_pie_data[cat_group_col] = cat_pie_data[fa_col].astype(str) + ' - ' + cat_pie_data[fb_col].astype(str)
-    else:
-        cat_pie_data = data
-        cat_group_col = group_col
+    if st.button("🥧 Generate Pie Charts", key="gen_cat_pie"):
+        ba_names = processed.structure.bile_acid_cols
+        if is_threeway:
+            cat_pie_data = data.copy()
+            cat_group_col = '_factorial_group_'
+            cat_pie_data[cat_group_col] = (cat_pie_data[results.factor_a_col].astype(str) + ' - '
+                                           + cat_pie_data[results.factor_b_col].astype(str) + ' - '
+                                           + cat_pie_data[results.factor_c_col].astype(str))
+        elif is_twoway:
+            cat_pie_data = data.copy()
+            cat_group_col = '_factorial_group_'
+            cat_pie_data[cat_group_col] = cat_pie_data[fa_col].astype(str) + ' - ' + cat_pie_data[fb_col].astype(str)
+        else:
+            cat_pie_data = data
+            cat_group_col = group_col
 
-    fig_cat_pie = viz.plot_category_composition_pie_charts(
-        data=cat_pie_data,
-        group_col=cat_group_col,
-        bile_acid_cols=ba_names,
-        title='Bile Acid Category Composition by Group',
-    )
-    st.pyplot(fig_cat_pie)
-    store_figure(fig_cat_pie, 'category_composition_pie')
-    plt.close(fig_cat_pie)
+        fig_cat_pie = viz.plot_category_composition_pie_charts(
+            data=cat_pie_data,
+            group_col=cat_group_col,
+            bile_acid_cols=ba_names,
+            title='Bile Acid Category Composition by Group',
+        )
+        st.pyplot(fig_cat_pie)
+        store_figure(fig_cat_pie, 'category_composition_pie')
+        plt.close(fig_cat_pie)
 
 
 def render_percentages_tab(processed, settings):

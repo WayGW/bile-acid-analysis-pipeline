@@ -1004,7 +1004,7 @@ class BileAcidVisualizer:
             figsize = (5 * n_categories, 5.5 * n_groups)
 
         fig, axes = plt.subplots(n_groups, n_categories, figsize=figsize, squeeze=False,
-                                 dpi=600)
+                                 dpi=150)
         fig.subplots_adjust(hspace=0.4, wspace=0.3)
 
         # Color palette for individual bile acids
