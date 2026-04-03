@@ -596,6 +596,9 @@ class ExcelReportGenerator:
                 combined = pd.concat([valid_data[[self.group_col]], self.percentages.loc[valid_data.index]], axis=1)
                 for col in self.percentages.columns:
                     if not combined[col].isna().all():
+                        base_ba = col.replace('_pct', '') if col.endswith('_pct') else col
+                        if base_ba in self.lod_excluded or self._should_exclude_for_lod(base_ba, valid_data):
+                            continue
                         try:
                             result = self.analyzer.analyze(combined, col, self.group_col)
                             self.results.percentages_results[col] = result
@@ -682,6 +685,9 @@ class ExcelReportGenerator:
                 combined = pd.concat([valid_data[[fa_col, fb_col]], self.percentages.loc[valid_data.index]], axis=1)
                 for col in self.percentages.columns:
                     if not combined[col].isna().all():
+                        base_ba = col.replace('_pct', '') if col.endswith('_pct') else col
+                        if base_ba in self.lod_excluded or self._should_exclude_for_lod(base_ba, valid_data):
+                            continue
                         try:
                             result = self.analyzer.analyze_twoway(
                                 combined, col, fa_col, fb_col, fa_name, fb_name
@@ -774,6 +780,9 @@ class ExcelReportGenerator:
                 combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.percentages.loc[valid_data.index]], axis=1)
                 for col in self.percentages.columns:
                     if not combined[col].isna().all():
+                        base_ba = col.replace('_pct', '') if col.endswith('_pct') else col
+                        if base_ba in self.lod_excluded or self._should_exclude_for_lod(base_ba, valid_data):
+                            continue
                         try:
                             result = self.analyzer.analyze_threeway(
                                 combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
