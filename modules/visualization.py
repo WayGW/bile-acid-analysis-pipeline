@@ -109,7 +109,7 @@ class BileAcidVisualizer:
             floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
             data[log_col] = np.log10(data[value_col].clip(lower=floor_val))
             plot_col = log_col
-            plot_ylabel = f'log₁₀({ylabel or value_col})'
+            plot_ylabel = f'log10({ylabel or value_col})'
         
         if plot_type == "bar":
             means = data.groupby(group_col)[plot_col].mean()
@@ -334,7 +334,7 @@ class BileAcidVisualizer:
             floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
             data[log_col] = np.log10(data[ratio_col].clip(lower=floor_val))
             plot_col = log_col
-            ylabel = f'log₁₀({ratio_col})'
+            ylabel = f'log10({ratio_col})'
         
         # Plot based on type
         if plot_type == "violin":
@@ -547,7 +547,7 @@ class BileAcidVisualizer:
                 floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
                 plot_data[log_col] = np.log10(plot_data[col].clip(lower=floor_val))
                 plot_col = log_col
-                ax_ylabel = f'log₁₀({ylabel})'
+                ax_ylabel = f'log10({ylabel})'
             
             if plot_type == "box":
                 sns.boxplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
@@ -695,7 +695,7 @@ class BileAcidVisualizer:
                 min_positive = data[col][data[col] > 0].min()
                 floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
                 data[col] = np.log10(data[col].clip(lower=floor_val))
-            plot_ylabel = f'log₁₀({ylabel})'
+            plot_ylabel = f'log10({ylabel})'
         
         groups = data[group_col].unique().tolist()
         n_groups = len(groups)
@@ -862,7 +862,7 @@ class BileAcidVisualizer:
         n_colors = len(top_bas) + 1  # +1 for "Other"
         palette_colors = get_group_palette(self.palette_name, n_colors)
         color_map = dict(zip(top_bas, palette_colors[:len(top_bas)]))
-        color_map['Other'] = '#999999'
+        color_map['Other'] = '#F5F0E8'
         
         for idx, (group, ax) in enumerate(zip(groups, axes)):
             group_data = data[data[group_col] == group][pct_cols].mean()
@@ -884,7 +884,7 @@ class BileAcidVisualizer:
                 plot_data = main_slices
             
             # Get colors for this pie
-            pie_colors = [color_map.get(ba, '#999999') for ba in plot_data.index]
+            pie_colors = [color_map.get(ba, '#F5F0E8') for ba in plot_data.index]
             
             # Create pie chart
             wedges, texts, autotexts = ax.pie(
@@ -922,7 +922,7 @@ class BileAcidVisualizer:
             sorted_labels.append('Other')
         
         # Create legend patches
-        legend_patches = [mpatches.Patch(color=color_map.get(label, '#999999'), label=label) 
+        legend_patches = [mpatches.Patch(color=color_map.get(label, '#F5F0E8'), label=label)
                          for label in sorted_labels if label in all_labels or label == 'Other']
         
         fig.legend(handles=legend_patches, loc='center left', bbox_to_anchor=(1.0, 0.5),
@@ -1014,7 +1014,7 @@ class BileAcidVisualizer:
         n_colors = max(len(all_bas), 10)
         palette_colors = get_group_palette('tab20', n_colors)
         ba_color_map = dict(zip(sorted(all_bas), palette_colors[:len(all_bas)]))
-        ba_color_map['Other'] = '#999999'
+        ba_color_map['Other'] = '#F5F0E8'
 
         category_names = list(categories.keys())
 
@@ -1048,7 +1048,7 @@ class BileAcidVisualizer:
                 else:
                     plot_data = main_slices
 
-                pie_colors = [ba_color_map.get(ba, '#999999') for ba in plot_data.index]
+                pie_colors = [ba_color_map.get(ba, '#F5F0E8') for ba in plot_data.index]
 
                 wedges, texts, autotexts = ax.pie(
                     plot_data.values,
@@ -1086,10 +1086,10 @@ class BileAcidVisualizer:
                     displayed_bas.update(pcts[pcts >= other_threshold].index.tolist())
 
             sorted_bas = sorted(displayed_bas, key=lambda x: x)
-            legend_items = [mpatches.Patch(color=ba_color_map.get(ba, '#999999'), label=ba)
+            legend_items = [mpatches.Patch(color=ba_color_map.get(ba, '#F5F0E8'), label=ba)
                            for ba in sorted_bas]
             if any(data[data[group_col] == g][species_list].mean().sum() > 0 for g in groups):
-                legend_items.append(mpatches.Patch(color='#999999', label='Other'))
+                legend_items.append(mpatches.Patch(color='#F5F0E8', label='Other'))
 
             # Place legend below the bottom subplot of each column
             axes[-1, col_idx].legend(
@@ -1306,6 +1306,7 @@ class BileAcidVisualizer:
         title: Optional[str] = None,
         show_anova_text: bool = True,
         plot_type: str = "bar",
+        log_scale: bool = False,
     ) -> plt.Axes:
         """
         Create grouped plot for two-way ANOVA.
@@ -1326,6 +1327,16 @@ class BileAcidVisualizer:
         df[value_col] = pd.to_numeric(df[value_col], errors='coerce')
         df = df.dropna()
 
+        # Apply log10 transform if requested
+        plot_col = value_col
+        plot_ylabel = ylabel
+        if log_scale:
+            plot_col = f'{value_col}_log10'
+            min_positive = df[value_col][df[value_col] > 0].min()
+            floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
+            df[plot_col] = np.log10(df[value_col].clip(lower=floor_val))
+            plot_ylabel = f'log10({ylabel})'
+
         # Get ordered levels
         a_levels = sorted(df[factor_a_col].unique())
         b_levels = sorted(df[factor_b_col].unique())
@@ -1339,31 +1350,31 @@ class BileAcidVisualizer:
         palette_dict = dict(zip(b_levels, palette))
 
         if plot_type == "box":
-            sns.boxplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+            sns.boxplot(data=df, x=factor_a_col, y=plot_col, hue=factor_b_col,
                        ax=ax, palette=palette_dict, order=a_levels, hue_order=b_levels)
             if show_points:
-                sns.stripplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+                sns.stripplot(data=df, x=factor_a_col, y=plot_col, hue=factor_b_col,
                              ax=ax, dodge=True, palette='dark:black', alpha=0.6, size=4,
                              order=a_levels, hue_order=b_levels, legend=False,
                              jitter=0.15, zorder=10, edgecolor='white', linewidth=0.3)
         elif plot_type == "violin":
-            sns.violinplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+            sns.violinplot(data=df, x=factor_a_col, y=plot_col, hue=factor_b_col,
                           ax=ax, palette=palette_dict, order=a_levels, hue_order=b_levels,
                           inner=None)
             if show_points:
-                sns.stripplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+                sns.stripplot(data=df, x=factor_a_col, y=plot_col, hue=factor_b_col,
                              ax=ax, dodge=True, palette='dark:black', alpha=0.6, size=4,
                              order=a_levels, hue_order=b_levels, legend=False,
                              jitter=0.15, zorder=10, edgecolor='white', linewidth=0.3)
         elif plot_type == "strip":
-            sns.stripplot(data=df, x=factor_a_col, y=value_col, hue=factor_b_col,
+            sns.stripplot(data=df, x=factor_a_col, y=plot_col, hue=factor_b_col,
                          ax=ax, dodge=True, palette=palette_dict, order=a_levels, hue_order=b_levels,
                          size=4, alpha=0.6)
             # Add mean +/- SEM lines
             for j, b_level in enumerate(b_levels):
                 x_pos = x_base + (j - (n_b - 1) / 2) * bar_width
                 for i_a, a_level in enumerate(a_levels):
-                    cell = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][value_col]
+                    cell = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][plot_col]
                     if len(cell) > 0:
                         m, s = cell.mean(), cell.sem() if len(cell) > 1 else 0
                         ax.hlines(m, x_pos[i_a] - bar_width * 0.35, x_pos[i_a] + bar_width * 0.35,
@@ -1376,7 +1387,7 @@ class BileAcidVisualizer:
                 means = []
                 sems = []
                 for a_level in a_levels:
-                    cell = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][value_col]
+                    cell = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][plot_col]
                     means.append(cell.mean() if len(cell) > 0 else 0)
                     sems.append(cell.sem() if len(cell) > 1 else 0)
 
@@ -1386,7 +1397,7 @@ class BileAcidVisualizer:
 
                 if show_points:
                     for i, a_level in enumerate(a_levels):
-                        cell_vals = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][value_col]
+                        cell_vals = df[(df[factor_a_col] == a_level) & (df[factor_b_col] == b_level)][plot_col]
                         if len(cell_vals) > 0:
                             jitter = np.random.normal(0, bar_width * 0.08, len(cell_vals))
                             ax.scatter(x_pos[i] + jitter, cell_vals, color='black', alpha=0.6,
@@ -1396,7 +1407,7 @@ class BileAcidVisualizer:
             ax.set_xticklabels(a_levels)
 
         ax.set_xlabel(fa_name)
-        ax.set_ylabel(ylabel)
+        ax.set_ylabel(plot_ylabel)
 
         # Add post-hoc significance brackets FIRST (they expand y-axis)
         if twoway_result is not None and twoway_result.posthoc_results is not None:
@@ -1634,6 +1645,7 @@ class BileAcidVisualizer:
         ylabel: str = "Concentration",
         show_points: bool = True,
         plot_type: str = "bar",
+        log_scale: bool = False,
     ) -> plt.Figure:
         """
         Create multi-panel two-way grouped plots with significance annotations.
@@ -1670,7 +1682,7 @@ class BileAcidVisualizer:
                 twoway_result=tw_result, ax=axes[i],
                 factor_a_name=factor_a_name, factor_b_name=factor_b_name,
                 ylabel=ylabel, show_points=show_points,
-                plot_type=plot_type,
+                plot_type=plot_type, log_scale=log_scale,
             )
 
         # Hide empty panels
@@ -2258,6 +2270,7 @@ class BileAcidVisualizer:
         ylabel: str = "Concentration",
         show_points: bool = True,
         plot_type: str = "bar",
+        log_scale: bool = False,
     ) -> plt.Figure:
         """
         Multi-panel faceted bar plots for three-way ANOVA.
@@ -2323,6 +2336,15 @@ class BileAcidVisualizer:
                     axes[row_idx, c_idx].set_visible(False)
                 continue
 
+            # Apply log10 transform if requested
+            plot_col = col
+            if log_scale:
+                plot_col = f'{col}_log10'
+                numeric_vals = pd.to_numeric(df[col], errors='coerce')
+                min_positive = numeric_vals[numeric_vals > 0].min()
+                floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
+                df[plot_col] = np.log10(numeric_vals.clip(lower=floor_val))
+
             tw_result = None
             if threeway_results and col in threeway_results:
                 result_obj = threeway_results[col]
@@ -2341,7 +2363,7 @@ class BileAcidVisualizer:
                     sems = []
                     for a_level in a_levels:
                         cell = subset[(subset[factor_a_col].astype(str).str.strip() == a_level) &
-                                      (subset[factor_b_col].astype(str).str.strip() == b_level)][col]
+                                      (subset[factor_b_col].astype(str).str.strip() == b_level)][plot_col]
                         cell = pd.to_numeric(cell, errors='coerce').dropna()
                         means.append(cell.mean() if len(cell) > 0 else 0)
                         sems.append(cell.sem() if len(cell) > 1 else 0)
@@ -2353,7 +2375,7 @@ class BileAcidVisualizer:
                     if show_points:
                         for i, a_level in enumerate(a_levels):
                             cell_vals = subset[(subset[factor_a_col].astype(str).str.strip() == a_level) &
-                                               (subset[factor_b_col].astype(str).str.strip() == b_level)][col]
+                                               (subset[factor_b_col].astype(str).str.strip() == b_level)][plot_col]
                             cell_vals = pd.to_numeric(cell_vals, errors='coerce').dropna()
                             if len(cell_vals) > 0:
                                 jitter_vals = np.random.normal(0, bar_width * 0.06, len(cell_vals))
@@ -2366,7 +2388,7 @@ class BileAcidVisualizer:
                 if row_idx == 0:
                     ax.set_title(f'{fc_name} = {c_level}', fontsize=9)
                 if c_idx == 0:
-                    ax.set_ylabel(col, fontsize=8)
+                    ax.set_ylabel(f'log10({col})' if log_scale else col, fontsize=8)
                 if row_idx == n_analytes - 1:
                     ax.set_xlabel(fa_name, fontsize=8)
 

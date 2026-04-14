@@ -67,6 +67,17 @@ class ComprehensiveAnalysisResults:
     factor_c_name: str = ""
     factor_c_col: str = ""
 
+    # Log₁₀-transformed results (parallel to raw results above — excludes percentages)
+    log_individual_ba_results: Dict[str, FullAnalysisResult] = field(default_factory=dict)
+    log_totals_results: Dict[str, FullAnalysisResult] = field(default_factory=dict)
+    log_ratios_results: Dict[str, FullAnalysisResult] = field(default_factory=dict)
+    log_twoway_individual_ba: Dict[str, FullTwoWayAnalysisResult] = field(default_factory=dict)
+    log_twoway_totals: Dict[str, FullTwoWayAnalysisResult] = field(default_factory=dict)
+    log_twoway_ratios: Dict[str, FullTwoWayAnalysisResult] = field(default_factory=dict)
+    log_threeway_individual_ba: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
+    log_threeway_totals: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
+    log_threeway_ratios: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
+
     # LOD exclusion tracking
     lod_excluded: Dict[str, float] = field(default_factory=dict)  # {analyte: lod_pct}
     lod_threshold: int = 50
@@ -546,6 +557,23 @@ class ExcelReportGenerator:
             self.results.factor_a_col = fa_col
             self.results.factor_b_col = fb_col
 
+    # --- Log₁₀ transform helper ---
+
+    @staticmethod
+    def _log_transform_column(data: pd.DataFrame, col: str) -> pd.Series:
+        """Log₁₀-transform a column, handling zeros/negatives with a floor value."""
+        vals = pd.to_numeric(data[col], errors='coerce')
+        min_positive = vals[vals > 0].min()
+        floor_val = min_positive / 10 if pd.notna(min_positive) else 0.001
+        return np.log10(vals.clip(lower=floor_val))
+
+    def _prepare_log_data(self, data: pd.DataFrame, col: str) -> Tuple[pd.DataFrame, str]:
+        """Create a copy of data with a log₁₀-transformed column. Returns (data_copy, log_col_name)."""
+        log_col = f'{col}_log10'
+        data_copy = data.copy()
+        data_copy[log_col] = self._log_transform_column(data_copy, col)
+        return data_copy, log_col
+
     # --- ONE-WAY sections ---
 
     def _run_oneway_section(self, valid_data, section):
@@ -560,6 +588,13 @@ class ExcelReportGenerator:
                         self.results.individual_ba_results[ba] = result
                     except Exception as e:
                         print(f"Could not analyze {ba}: {e}")
+                    try:
+                        log_data, log_col = self._prepare_log_data(valid_data, ba)
+                        log_result = self.analyzer.analyze(log_data, log_col, self.group_col)
+                        log_result.variable_name = ba
+                        self.results.log_individual_ba_results[ba] = log_result
+                    except Exception as e:
+                        print(f"Could not analyze {ba} (log₁₀): {e}")
             self._log(f"  Done: {len(self.results.individual_ba_results)} individual BAs analyzed")
 
         elif section == 'totals':
@@ -575,6 +610,13 @@ class ExcelReportGenerator:
                             self.results.totals_results[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col}: {e}")
+                        try:
+                            log_data, log_col = self._prepare_log_data(combined, col)
+                            log_result = self.analyzer.analyze(log_data, log_col, self.group_col)
+                            log_result.variable_name = col
+                            self.results.log_totals_results[col] = log_result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (log₁₀): {e}")
                 self._log(f"  Done: {len(self.results.totals_results)} totals analyzed")
 
         elif section == 'ratios':
@@ -588,6 +630,13 @@ class ExcelReportGenerator:
                             self.results.ratios_results[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col}: {e}")
+                        try:
+                            log_data, log_col = self._prepare_log_data(combined, col)
+                            log_result = self.analyzer.analyze(log_data, log_col, self.group_col)
+                            log_result.variable_name = col
+                            self.results.log_ratios_results[col] = log_result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (log₁₀): {e}")
                 self._log(f"  Done: {len(self.results.ratios_results)} ratios analyzed")
 
         elif section == 'percentages':
@@ -638,6 +687,15 @@ class ExcelReportGenerator:
                         self.results.twoway_individual_ba[ba] = result
                     except Exception as e:
                         print(f"Could not analyze {ba} (two-way): {e}")
+                    try:
+                        log_data, log_col = self._prepare_log_data(valid_data, ba)
+                        log_result = self.analyzer.analyze_twoway(
+                            log_data, log_col, fa_col, fb_col, fa_name, fb_name
+                        )
+                        log_result.variable_name = ba
+                        self.results.log_twoway_individual_ba[ba] = log_result
+                    except Exception as e:
+                        print(f"Could not analyze {ba} (two-way log₁₀): {e}")
                     if (i + 1) % 20 == 0:
                         gc.collect()
             gc.collect()
@@ -658,6 +716,15 @@ class ExcelReportGenerator:
                             self.results.twoway_totals[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col} (two-way): {e}")
+                        try:
+                            log_data, log_col = self._prepare_log_data(combined, col)
+                            log_result = self.analyzer.analyze_twoway(
+                                log_data, log_col, fa_col, fb_col, fa_name, fb_name
+                            )
+                            log_result.variable_name = col
+                            self.results.log_twoway_totals[col] = log_result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (two-way log₁₀): {e}")
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.twoway_totals)} totals analyzed")
@@ -675,6 +742,15 @@ class ExcelReportGenerator:
                             self.results.twoway_ratios[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col} (two-way): {e}")
+                        try:
+                            log_data, log_col = self._prepare_log_data(combined, col)
+                            log_result = self.analyzer.analyze_twoway(
+                                log_data, log_col, fa_col, fb_col, fa_name, fb_name
+                            )
+                            log_result.variable_name = col
+                            self.results.log_twoway_ratios[col] = log_result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (two-way log₁₀): {e}")
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.twoway_ratios)} ratios analyzed")
@@ -732,6 +808,15 @@ class ExcelReportGenerator:
                         self.results.threeway_individual_ba[ba] = result
                     except Exception as e:
                         print(f"Could not analyze {ba} (three-way): {e}")
+                    try:
+                        log_data, log_col = self._prepare_log_data(valid_data, ba)
+                        log_result = self.analyzer.analyze_threeway(
+                            log_data, log_col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                        )
+                        log_result.variable_name = ba
+                        self.results.log_threeway_individual_ba[ba] = log_result
+                    except Exception as e:
+                        print(f"Could not analyze {ba} (three-way log₁₀): {e}")
                     if (i + 1) % 20 == 0:
                         self._log(f"  Progress: {i + 1}/{len(self.ba_cols)} BAs...")
                         gc.collect()
@@ -753,6 +838,15 @@ class ExcelReportGenerator:
                             self.results.threeway_totals[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col} (three-way): {e}")
+                        try:
+                            log_data, log_col = self._prepare_log_data(combined, col)
+                            log_result = self.analyzer.analyze_threeway(
+                                log_data, log_col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                            )
+                            log_result.variable_name = col
+                            self.results.log_threeway_totals[col] = log_result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (three-way log₁₀): {e}")
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.threeway_totals)} totals analyzed")
@@ -770,6 +864,15 @@ class ExcelReportGenerator:
                             self.results.threeway_ratios[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col} (three-way): {e}")
+                        try:
+                            log_data, log_col = self._prepare_log_data(combined, col)
+                            log_result = self.analyzer.analyze_threeway(
+                                log_data, log_col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                            )
+                            log_result.variable_name = col
+                            self.results.log_threeway_ratios[col] = log_result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (three-way log₁₀): {e}")
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.threeway_ratios)} ratios analyzed")
@@ -1202,17 +1305,35 @@ class ExcelReportGenerator:
                         'Individual Bile Acid Three-Way ANOVA',
                         self.results.threeway_individual_ba
                     )
+                if self.results.log_threeway_individual_ba:
+                    self._write_threeway_results_sheet(
+                        writer, 'Individual_BA_log10',
+                        'Individual Bile Acid Three-Way ANOVA (log10)',
+                        self.results.log_threeway_individual_ba
+                    )
                 if self.results.threeway_totals:
                     self._write_threeway_results_sheet(
                         writer, 'Totals',
                         'Total Bile Acid Categories Three-Way ANOVA',
                         self.results.threeway_totals
                     )
+                if self.results.log_threeway_totals:
+                    self._write_threeway_results_sheet(
+                        writer, 'Totals_log10',
+                        'Total Bile Acid Categories Three-Way ANOVA (log10)',
+                        self.results.log_threeway_totals
+                    )
                 if self.results.threeway_ratios:
                     self._write_threeway_results_sheet(
                         writer, 'Ratios',
                         'Ratios Three-Way ANOVA',
                         self.results.threeway_ratios
+                    )
+                if self.results.log_threeway_ratios:
+                    self._write_threeway_results_sheet(
+                        writer, 'Ratios_log10',
+                        'Ratios Three-Way ANOVA (log10)',
+                        self.results.log_threeway_ratios
                     )
                 if self.results.threeway_percentages:
                     self._write_threeway_results_sheet(
@@ -1237,6 +1358,12 @@ class ExcelReportGenerator:
                         'Individual Bile Acid Two-Way ANOVA',
                         self.results.twoway_individual_ba
                     )
+                if self.results.log_twoway_individual_ba:
+                    self._write_twoway_results_sheet(
+                        writer, 'Individual_BA_log10',
+                        'Individual Bile Acid Two-Way ANOVA (log10)',
+                        self.results.log_twoway_individual_ba
+                    )
 
                 # Totals
                 if self.results.twoway_totals:
@@ -1245,6 +1372,12 @@ class ExcelReportGenerator:
                         'Total Bile Acid Categories Two-Way ANOVA',
                         self.results.twoway_totals
                     )
+                if self.results.log_twoway_totals:
+                    self._write_twoway_results_sheet(
+                        writer, 'Totals_log10',
+                        'Total Bile Acid Categories Two-Way ANOVA (log10)',
+                        self.results.log_twoway_totals
+                    )
 
                 # Ratios
                 if self.results.twoway_ratios:
@@ -1252,6 +1385,12 @@ class ExcelReportGenerator:
                         writer, 'Ratios',
                         'Ratios Two-Way ANOVA',
                         self.results.twoway_ratios
+                    )
+                if self.results.log_twoway_ratios:
+                    self._write_twoway_results_sheet(
+                        writer, 'Ratios_log10',
+                        'Ratios Two-Way ANOVA (log10)',
+                        self.results.log_twoway_ratios
                     )
 
                 # Percentages
@@ -1275,6 +1414,24 @@ class ExcelReportGenerator:
                 # Individual bile acid concentrations tab
                 if self.results.individual_ba_results:
                     self._write_concentrations_sheet(writer)
+                if self.results.log_individual_ba_results:
+                    self._write_concentrations_sheet(
+                        writer, 'Concentrations_log10',
+                        'INDIVIDUAL BILE ACID CONCENTRATION COMPARISONS (log₁₀)',
+                        self.results.log_individual_ba_results
+                    )
+                if self.results.log_totals_results:
+                    self._write_concentrations_sheet(
+                        writer, 'Totals_log10',
+                        'BILE ACID TOTALS COMPARISONS (log₁₀)',
+                        self.results.log_totals_results
+                    )
+                if self.results.log_ratios_results:
+                    self._write_concentrations_sheet(
+                        writer, 'Ratios_log10',
+                        'BILE ACID RATIO COMPARISONS (log₁₀)',
+                        self.results.log_ratios_results
+                    )
 
         return filepath
     
@@ -1299,12 +1456,14 @@ class ExcelReportGenerator:
             f'{len(_excl_cat)}' if _excl_cat else 'None'
         ] if self.lod_threshold > 0 else []
         summary_data = {
-            'Parameter': ['Total Samples', 'Groups', 'Bile Acids Measured', 'Significance Level'] + lod_params,
+            'Parameter': ['Total Samples', 'Groups', 'Bile Acids Measured', 'Significance Level',
+                          'Data Transformation'] + lod_params,
             'Value': [
                 len(self.data),
                 ', '.join(self.data[self.group_col].unique().astype(str)),
                 len(self.ba_cols),
-                f"α = {self.alpha}"
+                f"α = {self.alpha}",
+                'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)'
             ] + lod_values
         }
         summary_df = pd.DataFrame(summary_data)
@@ -1399,13 +1558,15 @@ class ExcelReportGenerator:
                 'Total Samples', 'Experimental Design',
                 f'Factor A: {fa_name}', f'Factor B: {fb_name}',
                 'Cell Sizes', 'Bile Acids Measured',
-                'Significance Level', 'Non-parametric Method'
+                'Significance Level', 'Non-parametric Method',
+                'Data Transformation'
             ] + lod_params_tw,
             'Value': [
                 len(valid_data), f'{fa_name} x {fb_name} factorial',
                 ', '.join(fa_levels), ', '.join(fb_levels),
                 '; '.join(cell_sizes), len(self.ba_cols),
-                f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)'
+                f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)',
+                'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)'
             ] + lod_values_tw
         }
         summary_df = pd.DataFrame(summary_data)
@@ -1648,12 +1809,14 @@ class ExcelReportGenerator:
             'Parameter': [
                 'Total Samples', 'Experimental Design',
                 f'Factor A: {fa_name}', f'Factor B: {fb_name}', f'Factor C: {fc_name}',
-                'Bile Acids Measured', 'Significance Level', 'Non-parametric Method'
+                'Bile Acids Measured', 'Significance Level', 'Non-parametric Method',
+                'Data Transformation'
             ] + lod_params_3w,
             'Value': [
                 len(valid_data), f'{fa_name} x {fb_name} x {fc_name} factorial',
                 ', '.join(fa_levels), ', '.join(fb_levels), ', '.join(fc_levels),
-                len(self.ba_cols), f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)'
+                len(self.ba_cols), f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)',
+                'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)'
             ] + lod_values_3w
         }
         summary_df = pd.DataFrame(summary_data)
@@ -1805,13 +1968,17 @@ class ExcelReportGenerator:
                     pass
             ws.column_dimensions[column_letter].width = min(max_length + 2, 50)
 
-    def _write_concentrations_sheet(self, writer: pd.ExcelWriter):
+    def _write_concentrations_sheet(self, writer: pd.ExcelWriter,
+                                    sheet_name: str = 'Concentrations',
+                                    title: str = 'INDIVIDUAL BILE ACID CONCENTRATION COMPARISONS',
+                                    results_dict: Dict = None):
         """Write individual bile acid concentration comparisons sheet."""
-        sheet_name = 'Concentrations'
+        if results_dict is None:
+            results_dict = self.results.individual_ba_results
         current_row = 0
 
         # Title
-        title_df = pd.DataFrame({'': ['INDIVIDUAL BILE ACID CONCENTRATION COMPARISONS']})
+        title_df = pd.DataFrame({'': [title]})
         title_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
                          index=False, header=False)
         current_row += 2
@@ -1823,7 +1990,7 @@ class ExcelReportGenerator:
         current_row += 1
 
         summary_rows = []
-        for ba_name, result in self.results.individual_ba_results.items():
+        for ba_name, result in results_dict.items():
             sig_comparisons = []
             if result.posthoc_test and result.posthoc_test.pairwise_results is not None:
                 sig_pairs = result.posthoc_test.pairwise_results[
@@ -1852,7 +2019,7 @@ class ExcelReportGenerator:
                                index=False, header=False)
         current_row += 2
 
-        for ba_name, result in self.results.individual_ba_results.items():
+        for ba_name, result in results_dict.items():
             # Analyte header
             var_header = pd.DataFrame({'': [f'--- {ba_name} ---']})
             var_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
