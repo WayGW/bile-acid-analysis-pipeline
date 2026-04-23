@@ -80,7 +80,8 @@ def get_data_affecting_settings(settings):
     return {
         'lod_handling': settings['lod_handling'],
         'lod_threshold': settings.get('lod_threshold', 50),
-        'alpha': settings['alpha']
+        'alpha': settings['alpha'],
+        'dilution_factor': settings.get('dilution_factor', 1.0),
     }
 
 
@@ -667,7 +668,20 @@ def create_full_data_excel_with_highlighting(processed, lod_handling='half_lod')
 def render_sidebar():
     """Render sidebar settings."""
     st.sidebar.markdown("## ⚙️ Settings")
-    
+
+    st.sidebar.markdown("### 🔬 Sample Preparation")
+    dilution_input = st.sidebar.number_input(
+        "Dilution factor",
+        min_value=0.0,
+        value=float(st.session_state.get('dilution_factor', 1.0)),
+        step=0.1,
+        format="%.4g",
+        help="Multiply all bile acid concentrations by this factor after LOD replacement. Use 1.0 for no correction."
+    )
+    if st.sidebar.button("Apply dilution factor"):
+        st.session_state.dilution_factor = dilution_input
+    dilution_factor = float(st.session_state.get('dilution_factor', 1.0))
+
     st.sidebar.markdown("### 📊 Detection Limits")
     lod_handling = st.sidebar.selectbox(
         "Below-LOD handling",
@@ -717,7 +731,8 @@ def render_sidebar():
     return {'lod_handling': lod_handling, 'lod_threshold': lod_threshold,
             'alpha': alpha, 'plot_type': plot_type,
             'show_points': show_points,
-            'color_palette': color_palette, 'plot_style': plot_style}
+            'color_palette': color_palette, 'plot_style': plot_style,
+            'dilution_factor': dilution_factor}
 
 
 def render_concentrations_tab(processed, settings):
@@ -2146,7 +2161,10 @@ def main():
             tmp_path = tmp.name
 
         # Sheet selection dropdown
-        processor = BileAcidDataProcessor(lod_handling=settings['lod_handling'])
+        processor = BileAcidDataProcessor(
+            lod_handling=settings['lod_handling'],
+            dilution_factor=settings['dilution_factor'],
+        )
         try:
             selectable_sheets, auto_detected_sheet = processor.get_selectable_sheets(tmp_path)
         except Exception as e:

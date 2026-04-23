@@ -119,11 +119,12 @@ class BileAcidDataProcessor:
         self,
         lod_handling: str = "half_lod",  # "zero", "lod", "half_lod", "half_min", "drop"
         lod_value: float = 0.1,  # Default/fallback LOD value when auto-detection fails
+        dilution_factor: float = 1.0,  # Multiply all BA values by this after LOD replacement
         custom_bile_acids: Optional[Dict] = None
     ):
         """
         Initialize the processor.
-        
+
         Args:
             lod_handling: How to handle below-LOD values
                 - "zero": Replace with 0
@@ -132,10 +133,12 @@ class BileAcidDataProcessor:
                 - "half_min": Replace with half the minimum detected value
                 - "drop": Keep as NaN
             lod_value: Default/fallback LOD value when auto-detection fails
+            dilution_factor: Multiplier applied to all BA concentrations after LOD replacement
             custom_bile_acids: Additional bile acid definitions to merge with panel
         """
         self.lod_handling = lod_handling
         self.lod_value = lod_value  # Fallback LOD
+        self.dilution_factor = dilution_factor
         
         # Merge custom BAs if provided
         self.bile_acid_panel = BILE_ACID_PANEL.copy()
@@ -1031,9 +1034,14 @@ class BileAcidDataProcessor:
                 clean_df[synthetic_col] = clean_df[synthetic_col] + ' - ' + clean_df[fc].astype(str)
             structure.group_col = synthetic_col
 
+        # Apply dilution factor to BA columns (after LOD replacement, before derived calcs)
+        if self.dilution_factor != 1.0:
+            ba_cols_present = [c for c in structure.bile_acid_cols if c in clean_df.columns]
+            clean_df[ba_cols_present] = clean_df[ba_cols_present] * self.dilution_factor
+
         # Extract sample data (with metadata)
         sample_df = clean_df.copy()
-        
+
         # Get concentration data (only BA columns)
         ba_cols = [c for c in structure.bile_acid_cols if c in sample_df.columns]
         concentrations = sample_df[ba_cols].copy()
