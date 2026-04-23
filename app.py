@@ -82,6 +82,7 @@ def get_data_affecting_settings(settings):
         'lod_threshold': settings.get('lod_threshold', 50),
         'alpha': settings['alpha'],
         'dilution_factor': settings.get('dilution_factor', 1.0),
+        'units': settings.get('units', 'nmol/L'),
     }
 
 
@@ -140,6 +141,7 @@ def _ensure_report_generator(processed, settings):
         analyte_lod_rows=getattr(processed.structure, 'analyte_lod_rows', {}),
         n_samples=len(processed.sample_data),
         lod_threshold=settings.get('lod_threshold', 50),
+        units=settings.get('units', 'nmol/L'),
     )
     st.session_state.report_generator = report_gen
     return report_gen
@@ -242,7 +244,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
                         threeway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
                         factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-                        ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                        ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
                     figures[f'concentrations{suffix}'] = fig
                 except Exception:
@@ -271,7 +273,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
                         threeway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
                         factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-                        ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                        ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
                     figures[f'totals{suffix}'] = fig
                 except Exception:
@@ -334,7 +336,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_col=fa_col, factor_b_col=fb_col,
                         twoway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
                         factor_a_name=fa_name, factor_b_name=fb_name,
-                        ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                        ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
                     figures[f'concentrations{suffix}'] = fig
                 except Exception:
@@ -345,7 +347,7 @@ def generate_all_export_figures(processed, results, settings):
                     factor_a_col=fa_col, factor_b_col=fb_col,
                     twoway_results=tw_stats_raw, ncols=3,
                     factor_a_name=fa_name, factor_b_name=fb_name,
-                    ylabel='Concentration (nmol/L)')
+                    ylabel=f'Concentration ({settings["units"]})')
                 figures[f'concentrations_{sel_name}_interaction'] = fig_int
             except Exception:
                 pass
@@ -374,7 +376,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_col=fa_col, factor_b_col=fb_col,
                         twoway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
                         factor_a_name=fa_name, factor_b_name=fb_name,
-                        ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                        ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
                     figures[f'totals{suffix}'] = fig
                 except Exception:
@@ -385,7 +387,7 @@ def generate_all_export_figures(processed, results, settings):
                     factor_a_col=fa_col, factor_b_col=fb_col,
                     twoway_results=tw_stats_raw, ncols=3,
                     factor_a_name=fa_name, factor_b_name=fb_name,
-                    ylabel='Concentration (nmol/L)')
+                    ylabel=f'Concentration ({settings["units"]})')
                 figures['totals_interaction'] = fig_int
             except Exception:
                 pass
@@ -439,7 +441,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_multi_panel_groups_with_stats(
                         data, selected, group_col, stats_log if log_scale else stats_raw, ncols=3,
                         plot_type=settings['plot_type'], log_scale=log_scale,
-                        show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
+                        show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
                     figures[f'concentrations{suffix}'] = fig
                 except Exception:
                     pass
@@ -465,7 +467,7 @@ def generate_all_export_figures(processed, results, settings):
                         totals_combined, available_totals, group_col,
                         totals_stats_log if log_scale else totals_stats_raw, ncols=3,
                         plot_type=settings['plot_type'], log_scale=log_scale,
-                        show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
+                        show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
                     figures[f'totals{suffix}'] = fig
                 except Exception:
                     pass
@@ -682,6 +684,15 @@ def render_sidebar():
         st.session_state.dilution_factor = dilution_input
     dilution_factor = float(st.session_state.get('dilution_factor', 1.0))
 
+    units_input = st.sidebar.text_input(
+        "Concentration units",
+        value=st.session_state.get('units', 'nmol/L'),
+        help="Units label shown on concentration and total bile acid plots."
+    )
+    if st.sidebar.button("Apply units"):
+        st.session_state.units = units_input
+    units = st.session_state.get('units', 'nmol/L')
+
     st.sidebar.markdown("### 📊 Detection Limits")
     lod_handling = st.sidebar.selectbox(
         "Below-LOD handling",
@@ -732,7 +743,8 @@ def render_sidebar():
             'alpha': alpha, 'plot_type': plot_type,
             'show_points': show_points,
             'color_palette': color_palette, 'plot_style': plot_style,
-            'dilution_factor': dilution_factor}
+            'dilution_factor': dilution_factor,
+            'units': units}
 
 
 def render_concentrations_tab(processed, settings):
@@ -840,7 +852,7 @@ def render_concentrations_tab(processed, settings):
                 factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
                 threeway_results=tw_stats, ncols=3,
                 factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-                ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                 plot_type=settings['plot_type'], log_scale=log_scale
             )
             st.pyplot(fig)
@@ -852,7 +864,7 @@ def render_concentrations_tab(processed, settings):
                 factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
                 threeway_results=tw_stats_other, ncols=3,
                 factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-                ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                 plot_type=settings['plot_type'], log_scale=not log_scale
             )
             store_figure(fig_other, f'concentrations_threeway{"_log" if not log_scale else ""}')
@@ -864,7 +876,7 @@ def render_concentrations_tab(processed, settings):
                     factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
                     threeway_results=tw_stats, ncols=3,
                     factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-                    ylabel='Concentration (nmol/L)'
+                    ylabel=f'Concentration ({settings["units"]})'
                 )
                 st.pyplot(fig_int)
                 store_figure(fig_int, 'concentrations_threeway_interaction')
@@ -894,7 +906,7 @@ def render_concentrations_tab(processed, settings):
                 factor_a_col=fa_col, factor_b_col=fb_col,
                 twoway_results=tw_stats, ncols=3,
                 factor_a_name=fa_name, factor_b_name=fb_name,
-                ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                 plot_type=settings['plot_type'], log_scale=log_scale
             )
             st.pyplot(fig)
@@ -906,7 +918,7 @@ def render_concentrations_tab(processed, settings):
                 factor_a_col=fa_col, factor_b_col=fb_col,
                 twoway_results=tw_stats_other, ncols=3,
                 factor_a_name=fa_name, factor_b_name=fb_name,
-                ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+                ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                 plot_type=settings['plot_type'], log_scale=not log_scale
             )
             store_figure(fig_other, f'concentrations_twoway{"_log" if not log_scale else ""}')
@@ -918,7 +930,7 @@ def render_concentrations_tab(processed, settings):
                     factor_a_col=fa_col, factor_b_col=fb_col,
                     twoway_results=tw_stats, ncols=3,
                     factor_a_name=fa_name, factor_b_name=fb_name,
-                    ylabel='Concentration (nmol/L)'
+                    ylabel=f'Concentration ({settings["units"]})'
                 )
                 st.pyplot(fig_int)
                 store_figure(fig_int, 'concentrations_interaction')
@@ -936,14 +948,14 @@ def render_concentrations_tab(processed, settings):
 
             fig = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict,
                                                          ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
-                                                         show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
+                                                         show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
             st.pyplot(fig)
             store_figure(fig, f'concentrations{"_log" if log_scale else ""}')
             plt.close(fig)
 
             fig_other = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict_other,
                                                                ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
-                                                               show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
+                                                               show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
             store_figure(fig_other, f'concentrations{"_log" if not log_scale else ""}')
             plt.close(fig_other)
 
@@ -992,7 +1004,7 @@ def render_totals_tab(processed, settings):
             factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
             threeway_results=tw_stats, ncols=3,
             factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-            ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+            ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=log_scale
         )
         st.pyplot(fig)
@@ -1004,7 +1016,7 @@ def render_totals_tab(processed, settings):
             factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
             threeway_results=tw_stats_other, ncols=3,
             factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-            ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+            ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=not log_scale
         )
         store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
@@ -1029,7 +1041,7 @@ def render_totals_tab(processed, settings):
             factor_a_col=fa_col, factor_b_col=fb_col,
             twoway_results=tw_stats, ncols=3,
             factor_a_name=results.factor_a_name, factor_b_name=results.factor_b_name,
-            ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+            ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=log_scale
         )
         st.pyplot(fig)
@@ -1041,7 +1053,7 @@ def render_totals_tab(processed, settings):
             factor_a_col=fa_col, factor_b_col=fb_col,
             twoway_results=tw_stats_other, ncols=3,
             factor_a_name=results.factor_a_name, factor_b_name=results.factor_b_name,
-            ylabel='Concentration (nmol/L)', show_points=settings['show_points'],
+            ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=not log_scale
         )
         store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
@@ -1061,14 +1073,14 @@ def render_totals_tab(processed, settings):
 
         fig = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
                                                      ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
-                                                     show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
+                                                     show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
         st.pyplot(fig)
         store_figure(fig, f'totals{"_log" if log_scale else ""}')
         plt.close(fig)
 
         fig_other = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict_other,
                                                            ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
-                                                           show_points=settings['show_points'], ylabel='Concentration (nmol/L)')
+                                                           show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
         store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
         plt.close(fig_other)
 

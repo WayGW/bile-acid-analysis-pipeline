@@ -362,6 +362,7 @@ class ExcelReportGenerator:
         analyte_lod_rows: Optional[Dict[str, List[int]]] = None,
         n_samples: int = 0,
         lod_threshold: int = 50,
+        units: str = "nmol/L",
     ):
         """
         Initialize report generator.
@@ -400,6 +401,7 @@ class ExcelReportGenerator:
         self.n_samples = n_samples if n_samples > 0 else len(data)
         self.lod_threshold = lod_threshold
         self.lod_excluded: Dict[str, float] = {}  # {analyte: lod_pct} for excluded analytes
+        self.units = units
 
         # Identify bile acid columns
         if bile_acid_cols:
@@ -2353,7 +2355,7 @@ class SignificancePlotter:
             # Format
             ax.set_title(category.replace('_', ' '), fontsize=11, fontweight='bold')
             ax.set_xlabel('')
-            ax.set_ylabel('Concentration (nmol/L)', fontsize=9)
+            ax.set_ylabel(f'Concentration ({report_generator.units})', fontsize=9)
             ax.tick_params(axis='x', rotation=0)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
