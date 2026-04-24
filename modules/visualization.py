@@ -548,50 +548,51 @@ class BileAcidVisualizer:
                 plot_data[log_col] = np.log10(plot_data[col].clip(lower=floor_val))
                 plot_col = log_col
                 ax_ylabel = f'log10({ylabel})'
-            
+
+            valid_groups = [g for g in groups if plot_data[plot_data[group_col] == g][plot_col].notna().any()]
+
             if plot_type == "box":
                 sns.boxplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
-                          hue=group_col, palette=palette, order=groups, legend=False)
+                          hue=group_col, palette=palette, order=valid_groups, legend=False)
                 if show_points:
                     sns.stripplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
-                                color='black', alpha=0.7, size=6, order=groups, 
+                                color='black', alpha=0.7, size=6, order=valid_groups,
                                 jitter=0.2, zorder=10, edgecolor='white', linewidth=0.5)
             elif plot_type == "violin":
                 sns.violinplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
-                             hue=group_col, palette=palette, order=groups,
+                             hue=group_col, palette=palette, order=valid_groups,
                              inner=None, legend=False, cut=0)
                 if show_points:
                     sns.stripplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
-                                color='black', alpha=0.7, size=6, order=groups,
+                                color='black', alpha=0.7, size=6, order=valid_groups,
                                 jitter=0.15, zorder=10, edgecolor='white', linewidth=0.5)
             elif plot_type == "strip":
                 sns.stripplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
-                             hue=group_col, palette=palette, order=groups,
+                             hue=group_col, palette=palette, order=valid_groups,
                              size=6, alpha=0.7, legend=False)
                 # Add mean ± SEM lines
                 grp_means = plot_data.groupby(group_col)[plot_col].mean()
                 grp_sems = plot_data.groupby(group_col)[plot_col].sem()
-                for j, g in enumerate(groups):
-                    if g in grp_means.index:
-                        ax.hlines(grp_means[g], j - 0.25, j + 0.25, color='black', linewidth=1.5, zorder=5)
-                        ax.errorbar(j, grp_means[g], yerr=grp_sems[g], color='black',
-                                   capsize=5, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)
+                for j, g in enumerate(valid_groups):
+                    ax.hlines(grp_means[g], j - 0.25, j + 0.25, color='black', linewidth=1.5, zorder=5)
+                    ax.errorbar(j, grp_means[g], yerr=grp_sems[g], color='black',
+                               capsize=5, capthick=1.5, linewidth=1.5, fmt='none', zorder=5)
             elif plot_type == "bar":
                 means = plot_data.groupby(group_col)[plot_col].mean()
                 sems = plot_data.groupby(group_col)[plot_col].sem()
-                x = range(len(groups))
-                ax.bar(x, [means[g] for g in groups],
-                      yerr=[sems[g] for g in groups],
-                      capsize=3, color=[palette[g] for g in groups],
+                x = range(len(valid_groups))
+                ax.bar(x, [means[g] for g in valid_groups],
+                      yerr=[sems[g] for g in valid_groups],
+                      capsize=3, color=[palette[g] for g in valid_groups],
                       edgecolor='black', linewidth=0.5)
                 if show_points:
-                    for j, g in enumerate(groups):
+                    for j, g in enumerate(valid_groups):
                         group_vals = plot_data[plot_data[group_col] == g][plot_col]
                         jitter = np.random.normal(0, 0.1, len(group_vals))
-                        ax.scatter(j + jitter, group_vals, color='black', alpha=0.7, s=30, 
+                        ax.scatter(j + jitter, group_vals, color='black', alpha=0.7, s=30,
                                   zorder=10, edgecolors='white', linewidths=0.5)
                 ax.set_xticks(x)
-                ax.set_xticklabels(groups)
+                ax.set_xticklabels(valid_groups)
             
             # Add significance annotations (use original data for stats)
             if col in stats_results:
