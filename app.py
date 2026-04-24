@@ -225,8 +225,8 @@ def generate_all_export_figures(processed, results, settings):
             'significant': [b for b in available_bas if b in results.threeway_individual_ba
                            and any(getattr(results.threeway_individual_ba[b].threeway_result, attr) < settings['alpha']
                                    for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])][:10],
-            'primary': [b for b in get_primary() if b in available_bas][:10],
-            'secondary': [b for b in get_secondary() if b in available_bas][:10],
+            'primary': [b for b in get_primary() if b in available_bas],
+            'secondary': [b for b in get_secondary() if b in available_bas],
         }
 
         for sel_name, selected in conc_selections.items():
@@ -317,8 +317,8 @@ def generate_all_export_figures(processed, results, settings):
                            and (results.twoway_individual_ba[b].twoway_result.factor_a_pvalue < settings['alpha']
                                 or results.twoway_individual_ba[b].twoway_result.factor_b_pvalue < settings['alpha']
                                 or results.twoway_individual_ba[b].twoway_result.interaction_pvalue < settings['alpha'])][:10],
-            'primary': [b for b in get_primary() if b in available_bas][:10],
-            'secondary': [b for b in get_secondary() if b in available_bas][:10],
+            'primary': [b for b in get_primary() if b in available_bas],
+            'secondary': [b for b in get_secondary() if b in available_bas],
         }
 
         for sel_name, selected in conc_selections.items():
@@ -425,8 +425,8 @@ def generate_all_export_figures(processed, results, settings):
             'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
             'significant': [b for b in available_bas if b in results.individual_ba_results
                            and results.individual_ba_results[b].main_test.significant][:10],
-            'primary': [b for b in get_primary() if b in available_bas][:10],
-            'secondary': [b for b in get_secondary() if b in available_bas][:10],
+            'primary': [b for b in get_primary() if b in available_bas],
+            'secondary': [b for b in get_secondary() if b in available_bas],
         }
 
         for sel_name, selected in conc_selections.items():
@@ -776,42 +776,42 @@ def render_concentrations_tab(processed, settings):
         if is_threeway:
             selected = [b for b in available_bas if b in results.threeway_individual_ba
                        and any(getattr(results.threeway_individual_ba[b].threeway_result, attr) < settings['alpha']
-                               for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])][:10]
+                               for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
         elif is_twoway:
             selected = [b for b in available_bas if b in results.twoway_individual_ba
                        and (results.twoway_individual_ba[b].twoway_result.factor_a_pvalue < settings['alpha']
                             or results.twoway_individual_ba[b].twoway_result.factor_b_pvalue < settings['alpha']
-                            or results.twoway_individual_ba[b].twoway_result.interaction_pvalue < settings['alpha'])][:10]
+                            or results.twoway_individual_ba[b].twoway_result.interaction_pvalue < settings['alpha'])]
         else:
             selected = [b for b in available_bas if b in results.individual_ba_results
-                       and results.individual_ba_results[b].main_test.significant][:10]
+                       and results.individual_ba_results[b].main_test.significant]
         if not selected:
             st.info("No significant individual BAs found.")
             selected = processed.concentrations.mean().nlargest(5).index.tolist()
     elif quick == "Primary":
-        selected = [b for b in get_primary() if b in available_bas][:10]
+        selected = [b for b in get_primary() if b in available_bas]
     elif quick == "Secondary":
-        selected = [b for b in get_secondary() if b in available_bas][:10]
+        selected = [b for b in get_secondary() if b in available_bas]
     elif quick == "Conjugated":
-        selected = [b for b in get_conjugated() if b in available_bas][:10]
+        selected = [b for b in get_conjugated() if b in available_bas]
     elif quick == "Unconjugated":
-        selected = [b for b in get_unconjugated() if b in available_bas][:10]
+        selected = [b for b in get_unconjugated() if b in available_bas]
     elif quick == "Glycine":
-        selected = [b for b in get_glycine_conjugated() if b in available_bas][:10]
+        selected = [b for b in get_glycine_conjugated() if b in available_bas]
     elif quick == "Taurine":
-        selected = [b for b in get_taurine_conjugated() if b in available_bas][:10]
+        selected = [b for b in get_taurine_conjugated() if b in available_bas]
     elif quick == "Sulfated":
-        selected = [b for b in get_sulfated() if b in available_bas][:10]
+        selected = [b for b in get_sulfated() if b in available_bas]
     elif quick == "Oxidized":
-        selected = [b for b in get_keto_derivatives() if b in available_bas][:10]
+        selected = [b for b in get_keto_derivatives() if b in available_bas]
     elif quick == "Epimerized":
-        selected = [b for b in get_iso_forms() if b in available_bas][:10]
+        selected = [b for b in get_iso_forms() if b in available_bas]
     elif quick == "12α-OH":
-        selected = [b for b in get_12alpha_hydroxylated() if b in available_bas][:10]
+        selected = [b for b in get_12alpha_hydroxylated() if b in available_bas]
     elif quick == "Non-12α-OH":
-        selected = [b for b in get_non12alpha_hydroxylated() if b in available_bas][:10]
+        selected = [b for b in get_non12alpha_hydroxylated() if b in available_bas]
     elif quick == "Nor":
-        selected = [b for b in get_nor_bile_acids() if b in available_bas][:10]
+        selected = [b for b in get_nor_bile_acids() if b in available_bas]
     elif quick == "Show All":
         selected = available_bas
     else:
@@ -1161,7 +1161,7 @@ def render_percentages_tab(processed, settings):
                      default="Top 10 by mean %", key="pct_quick")
 
     def _pct_select(getter):
-        return [f'{ba}_pct' for ba in getter() if f'{ba}_pct' in pct_cols][:10]
+        return [f'{ba}_pct' for ba in getter() if f'{ba}_pct' in pct_cols]
 
     if quick == "Top 10 by mean %":
         top_pcts = percentages[pct_cols].mean().nlargest(10).index.tolist()
