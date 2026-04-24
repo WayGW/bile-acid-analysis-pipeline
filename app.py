@@ -670,7 +670,17 @@ def create_full_data_excel_with_highlighting(processed, lod_handling='half_lod')
 def render_sidebar():
     """Render sidebar settings."""
     st.sidebar.markdown("## ⚙️ Settings")
-
+    st.sidebar.markdown("### 🔬 Sample Preparation")
+    dilution_input = st.sidebar.number_input(
+        "Dilution factor",
+        min_value=0.0,
+        value=float(st.session_state.get('dilution_factor', 1.0)),
+        step=0.1,
+        format="%.4g",
+        help="Applied only to LOD replacement values (measured values are already dilution-corrected)."
+    )
+    if st.sidebar.button("Apply dilution factor"):
+        st.session_state.dilution_factor = dilution_input
     dilution_factor = float(st.session_state.get('dilution_factor', 1.0))
 
     units_input = st.sidebar.text_input(

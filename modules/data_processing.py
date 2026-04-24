@@ -831,16 +831,16 @@ class BileAcidDataProcessor:
             series = series.fillna(0)
         elif self.lod_handling == "lod":
             # Use the analyte-specific LOD value
-            series = series.fillna(analyte_lod)
+            series = series.fillna(analyte_lod * self.dilution_factor)
         elif self.lod_handling == "half_lod":
             # Use half the analyte-specific LOD value
-            series = series.fillna(analyte_lod / 2)
+            series = series.fillna((analyte_lod / 2) * self.dilution_factor)
         elif self.lod_handling == "half_min":
             min_val = series[series > 0].min()
             if pd.notna(min_val):
                 series = series.fillna(min_val / 2)
             else:
-                series = series.fillna(analyte_lod / 2)
+                series = series.fillna((analyte_lod / 2) * self.dilution_factor)
         # "drop" leaves NaN
         
         return series, below_lod_count, below_lod_indices
@@ -1034,10 +1034,6 @@ class BileAcidDataProcessor:
                 clean_df[synthetic_col] = clean_df[synthetic_col] + ' - ' + clean_df[fc].astype(str)
             structure.group_col = synthetic_col
 
-        # Apply dilution factor to BA columns (after LOD replacement, before derived calcs)
-        if self.dilution_factor != 1.0:
-            ba_cols_present = [c for c in structure.bile_acid_cols if c in clean_df.columns]
-            clean_df[ba_cols_present] = clean_df[ba_cols_present] * self.dilution_factor
 
         # Extract sample data (with metadata)
         sample_df = clean_df.copy()
