@@ -224,7 +224,7 @@ def generate_all_export_figures(processed, results, settings):
             'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
             'significant': [b for b in available_bas if b in results.threeway_individual_ba
                            and any(getattr(results.threeway_individual_ba[b].threeway_result, attr) < settings['alpha']
-                                   for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])][:10],
+                                   for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])],
             'primary': [b for b in get_primary() if b in available_bas],
             'secondary': [b for b in get_secondary() if b in available_bas],
         }
@@ -242,7 +242,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_threeway_multi_panel(
                         data=data, value_cols=selected,
                         factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-                        threeway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
+                        threeway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=6,
                         factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                         ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
@@ -271,7 +271,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_threeway_multi_panel(
                         data=totals_data, value_cols=available_totals,
                         factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-                        threeway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
+                        threeway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=6,
                         factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                         ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
@@ -293,7 +293,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_threeway_multi_panel(
                         data=ratio_data, value_cols=ratio_cols[:9],
                         factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-                        threeway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
+                        threeway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=6,
                         factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                         ylabel='Ratio', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
@@ -316,7 +316,7 @@ def generate_all_export_figures(processed, results, settings):
             'significant': [b for b in available_bas if b in results.twoway_individual_ba
                            and (results.twoway_individual_ba[b].twoway_result.factor_a_pvalue < settings['alpha']
                                 or results.twoway_individual_ba[b].twoway_result.factor_b_pvalue < settings['alpha']
-                                or results.twoway_individual_ba[b].twoway_result.interaction_pvalue < settings['alpha'])][:10],
+                                or results.twoway_individual_ba[b].twoway_result.interaction_pvalue < settings['alpha'])],
             'primary': [b for b in get_primary() if b in available_bas],
             'secondary': [b for b in get_secondary() if b in available_bas],
         }
@@ -334,7 +334,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_twoway_multi_panel(
                         data=data, value_cols=selected,
                         factor_a_col=fa_col, factor_b_col=fb_col,
-                        twoway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
+                        twoway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=6,
                         factor_a_name=fa_name, factor_b_name=fb_name,
                         ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
@@ -345,7 +345,7 @@ def generate_all_export_figures(processed, results, settings):
                 fig_int = viz.plot_twoway_interaction_multi_panel(
                     data=data, value_cols=selected,
                     factor_a_col=fa_col, factor_b_col=fb_col,
-                    twoway_results=tw_stats_raw, ncols=3,
+                    twoway_results=tw_stats_raw, ncols=6,
                     factor_a_name=fa_name, factor_b_name=fb_name,
                     ylabel=f'Concentration ({settings["units"]})')
                 figures[f'concentrations_{sel_name}_interaction'] = fig_int
@@ -374,7 +374,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_twoway_multi_panel(
                         data=totals_data, value_cols=available_totals,
                         factor_a_col=fa_col, factor_b_col=fb_col,
-                        twoway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
+                        twoway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=6,
                         factor_a_name=fa_name, factor_b_name=fb_name,
                         ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
@@ -385,7 +385,7 @@ def generate_all_export_figures(processed, results, settings):
                 fig_int = viz.plot_twoway_interaction_multi_panel(
                     data=totals_data, value_cols=available_totals,
                     factor_a_col=fa_col, factor_b_col=fb_col,
-                    twoway_results=tw_stats_raw, ncols=3,
+                    twoway_results=tw_stats_raw, ncols=6,
                     factor_a_name=fa_name, factor_b_name=fb_name,
                     ylabel=f'Concentration ({settings["units"]})')
                 figures['totals_interaction'] = fig_int
@@ -407,7 +407,7 @@ def generate_all_export_figures(processed, results, settings):
                     fig = viz.plot_twoway_multi_panel(
                         data=ratio_data, value_cols=ratio_cols[:9],
                         factor_a_col=fa_col, factor_b_col=fb_col,
-                        twoway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=3,
+                        twoway_results=tw_stats_log if log_scale else tw_stats_raw, ncols=6,
                         factor_a_name=fa_name, factor_b_name=fb_name,
                         ylabel='Ratio', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
@@ -424,7 +424,7 @@ def generate_all_export_figures(processed, results, settings):
         conc_selections = {
             'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
             'significant': [b for b in available_bas if b in results.individual_ba_results
-                           and results.individual_ba_results[b].main_test.significant][:10],
+                           and results.individual_ba_results[b].main_test.significant],
             'primary': [b for b in get_primary() if b in available_bas],
             'secondary': [b for b in get_secondary() if b in available_bas],
         }
@@ -439,7 +439,7 @@ def generate_all_export_figures(processed, results, settings):
                 suffix = f"_{sel_name}{'_log' if log_scale else ''}"
                 try:
                     fig = viz.plot_multi_panel_groups_with_stats(
-                        data, selected, group_col, stats_log if log_scale else stats_raw, ncols=3,
+                        data, selected, group_col, stats_log if log_scale else stats_raw, ncols=6,
                         plot_type=settings['plot_type'], log_scale=log_scale,
                         show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
                     figures[f'concentrations{suffix}'] = fig
@@ -465,7 +465,7 @@ def generate_all_export_figures(processed, results, settings):
                 try:
                     fig = viz.plot_multi_panel_groups_with_stats(
                         totals_combined, available_totals, group_col,
-                        totals_stats_log if log_scale else totals_stats_raw, ncols=3,
+                        totals_stats_log if log_scale else totals_stats_raw, ncols=6,
                         plot_type=settings['plot_type'], log_scale=log_scale,
                         show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
                     figures[f'totals{suffix}'] = fig
@@ -488,7 +488,7 @@ def generate_all_export_figures(processed, results, settings):
 
             try:
                 fig = viz.plot_multi_panel_groups_with_stats(
-                    pct_display, display_cols, group_col, pct_stats, ncols=3,
+                    pct_display, display_cols, group_col, pct_stats, ncols=6,
                     plot_type=settings['plot_type'], log_scale=False,
                     show_points=settings['show_points'], ylabel='% of Total BA')
                 figures['percentages_top10'] = fig
@@ -507,7 +507,7 @@ def generate_all_export_figures(processed, results, settings):
                 try:
                     fig = viz.plot_multi_panel_groups_with_stats(
                         ratios_combined, ratio_cols[:9], group_col,
-                        ratios_stats_log if log_scale else ratios_stats_raw, ncols=3,
+                        ratios_stats_log if log_scale else ratios_stats_raw, ncols=6,
                         plot_type=settings['plot_type'], log_scale=log_scale,
                         show_points=settings['show_points'], ylabel='Ratio')
                     figures[f'ratios{suffix}'] = fig
@@ -765,7 +765,8 @@ def render_concentrations_tab(processed, settings):
     is_twoway = results is not None and results.is_twoway
 
     quick = st.segmented_control("Quick select",
-        ["Top 10", "Significant", "Primary", "Secondary", "Conjugated", "Unconjugated",
+        ["Top 10", "Significant", "Primary", "Primary Conjugated", "Primary Unconjugated", 
+         "Secondary", "Conjugated", "Unconjugated", "Secondary Conjugated", "Secondary Unconjugated",
          "Glycine", "Taurine", "Sulfated", "Oxidized", "Epimerized",
          "12α-OH", "Non-12α-OH", "Nor", "Show All", "Custom"],
         default="Top 10")
@@ -790,8 +791,20 @@ def render_concentrations_tab(processed, settings):
             selected = processed.concentrations.mean().nlargest(5).index.tolist()
     elif quick == "Primary":
         selected = [b for b in get_primary() if b in available_bas]
+    elif quick == "Primary Conjugated":
+        primary_list = get_primary()
+        selected = [b for b in get_conjugated() if b in available_bas and b in primary_list]
+    elif quick == "Primary Unconjugated":
+        primary_list = get_primary()
+        selected = [b for b in get_unconjugated() if b in available_bas and b in primary_list]
     elif quick == "Secondary":
         selected = [b for b in get_secondary() if b in available_bas]
+    elif quick == "Secondary Conjugated":
+        secondary_list = get_secondary()
+        selected = [b for b in get_conjugated() if b in available_bas and b in secondary_list]
+    elif quick == "Secondary Unconjugated":
+        secondary_list = get_secondary()
+        selected = [b for b in get_unconjugated() if b in available_bas and b in secondary_list]
     elif quick == "Conjugated":
         selected = [b for b in get_conjugated() if b in available_bas]
     elif quick == "Unconjugated":
@@ -849,7 +862,7 @@ def render_concentrations_tab(processed, settings):
             fig = viz.plot_threeway_multi_panel(
                 data=data, value_cols=selected,
                 factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-                threeway_results=tw_stats, ncols=3,
+                threeway_results=tw_stats, ncols=6,
                 factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                 ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                 plot_type=settings['plot_type'], log_scale=log_scale
@@ -861,7 +874,7 @@ def render_concentrations_tab(processed, settings):
             fig_other = viz.plot_threeway_multi_panel(
                 data=data, value_cols=selected,
                 factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-                threeway_results=tw_stats_other, ncols=3,
+                threeway_results=tw_stats_other, ncols=6,
                 factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                 ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                 plot_type=settings['plot_type'], log_scale=not log_scale
@@ -873,7 +886,7 @@ def render_concentrations_tab(processed, settings):
                 fig_int = viz.plot_threeway_interaction_multi_panel(
                     data=data, value_cols=selected,
                     factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-                    threeway_results=tw_stats, ncols=3,
+                    threeway_results=tw_stats, ncols=6,
                     factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                     ylabel=f'Concentration ({settings["units"]})'
                 )
@@ -903,7 +916,7 @@ def render_concentrations_tab(processed, settings):
             fig = viz.plot_twoway_multi_panel(
                 data=data, value_cols=selected,
                 factor_a_col=fa_col, factor_b_col=fb_col,
-                twoway_results=tw_stats, ncols=3,
+                twoway_results=tw_stats, ncols=6,
                 factor_a_name=fa_name, factor_b_name=fb_name,
                 ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                 plot_type=settings['plot_type'], log_scale=log_scale
@@ -915,7 +928,7 @@ def render_concentrations_tab(processed, settings):
             fig_other = viz.plot_twoway_multi_panel(
                 data=data, value_cols=selected,
                 factor_a_col=fa_col, factor_b_col=fb_col,
-                twoway_results=tw_stats_other, ncols=3,
+                twoway_results=tw_stats_other, ncols=6,
                 factor_a_name=fa_name, factor_b_name=fb_name,
                 ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                 plot_type=settings['plot_type'], log_scale=not log_scale
@@ -927,7 +940,7 @@ def render_concentrations_tab(processed, settings):
                 fig_int = viz.plot_twoway_interaction_multi_panel(
                     data=data, value_cols=selected,
                     factor_a_col=fa_col, factor_b_col=fb_col,
-                    twoway_results=tw_stats, ncols=3,
+                    twoway_results=tw_stats, ncols=6,
                     factor_a_name=fa_name, factor_b_name=fb_name,
                     ylabel=f'Concentration ({settings["units"]})'
                 )
@@ -946,14 +959,14 @@ def render_concentrations_tab(processed, settings):
             stats_dict_other = stats_dict_raw if log_scale else stats_dict_log
 
             fig = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict,
-                                                         ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
+                                                         ncols=6, plot_type=settings['plot_type'], log_scale=log_scale,
                                                          show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
             st.pyplot(fig)
             store_figure(fig, f'concentrations{"_log" if log_scale else ""}')
             plt.close(fig)
 
             fig_other = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict_other,
-                                                               ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
+                                                               ncols=6, plot_type=settings['plot_type'], log_scale=not log_scale,
                                                                show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
             store_figure(fig_other, f'concentrations{"_log" if not log_scale else ""}')
             plt.close(fig_other)
@@ -1001,7 +1014,7 @@ def render_totals_tab(processed, settings):
         fig = viz.plot_threeway_multi_panel(
             data=combined, value_cols=available,
             factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-            threeway_results=tw_stats, ncols=3,
+            threeway_results=tw_stats, ncols=6,
             factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
             ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=log_scale
@@ -1013,7 +1026,7 @@ def render_totals_tab(processed, settings):
         fig_other = viz.plot_threeway_multi_panel(
             data=combined, value_cols=available,
             factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-            threeway_results=tw_stats_other, ncols=3,
+            threeway_results=tw_stats_other, ncols=6,
             factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
             ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=not log_scale
@@ -1038,7 +1051,7 @@ def render_totals_tab(processed, settings):
         fig = viz.plot_twoway_multi_panel(
             data=combined, value_cols=available,
             factor_a_col=fa_col, factor_b_col=fb_col,
-            twoway_results=tw_stats, ncols=3,
+            twoway_results=tw_stats, ncols=6,
             factor_a_name=results.factor_a_name, factor_b_name=results.factor_b_name,
             ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=log_scale
@@ -1050,7 +1063,7 @@ def render_totals_tab(processed, settings):
         fig_other = viz.plot_twoway_multi_panel(
             data=combined, value_cols=available,
             factor_a_col=fa_col, factor_b_col=fb_col,
-            twoway_results=tw_stats_other, ncols=3,
+            twoway_results=tw_stats_other, ncols=6,
             factor_a_name=results.factor_a_name, factor_b_name=results.factor_b_name,
             ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=not log_scale
@@ -1071,14 +1084,14 @@ def render_totals_tab(processed, settings):
         stats_dict_other = stats_dict_raw if log_scale else stats_dict_log
 
         fig = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
-                                                     ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
+                                                     ncols=6, plot_type=settings['plot_type'], log_scale=log_scale,
                                                      show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
         st.pyplot(fig)
         store_figure(fig, f'totals{"_log" if log_scale else ""}')
         plt.close(fig)
 
         fig_other = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict_other,
-                                                           ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
+                                                           ncols=6, plot_type=settings['plot_type'], log_scale=not log_scale,
                                                            show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
         store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
         plt.close(fig_other)
@@ -1170,15 +1183,15 @@ def render_percentages_tab(processed, settings):
         if is_threeway:
             selected_pct_cols = [c for c in pct_cols if c in results.threeway_percentages
                                and any(getattr(results.threeway_percentages[c].threeway_result, attr) < settings['alpha']
-                                       for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])][:10]
+                                       for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
         elif is_twoway:
             selected_pct_cols = [c for c in pct_cols if c in results.twoway_percentages
                                and (results.twoway_percentages[c].twoway_result.factor_a_pvalue < settings['alpha']
                                     or results.twoway_percentages[c].twoway_result.factor_b_pvalue < settings['alpha']
-                                    or results.twoway_percentages[c].twoway_result.interaction_pvalue < settings['alpha'])][:10]
+                                    or results.twoway_percentages[c].twoway_result.interaction_pvalue < settings['alpha'])]
         else:
             selected_pct_cols = [c for c in pct_cols if c in results.percentages_results
-                               and results.percentages_results[c].main_test.significant][:10]
+                               and results.percentages_results[c].main_test.significant]
         if not selected_pct_cols:
             st.info("No significant percentage differences found. Showing top 10 by mean %.")
             selected_pct_cols = percentages[pct_cols].mean().nlargest(10).index.tolist()
@@ -1259,7 +1272,7 @@ def render_percentages_tab(processed, settings):
             fig = viz.plot_threeway_multi_panel(
                 data=pct_plot_data, value_cols=display_names,
                 factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-                threeway_results=tw_stats, ncols=3,
+                threeway_results=tw_stats, ncols=6,
                 factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                 ylabel='% of Total BA', show_points=settings['show_points'],
                 plot_type=settings['plot_type']
@@ -1294,7 +1307,7 @@ def render_percentages_tab(processed, settings):
             fig = viz.plot_twoway_multi_panel(
                 data=pct_plot_data, value_cols=display_names,
                 factor_a_col=fa_col, factor_b_col=fb_col,
-                twoway_results=tw_stats, ncols=3,
+                twoway_results=tw_stats, ncols=6,
                 factor_a_name=fa_name, factor_b_name=fb_name,
                 ylabel='% of Total BA', show_points=settings['show_points'],
                 plot_type=settings['plot_type']
@@ -1325,7 +1338,7 @@ def render_percentages_tab(processed, settings):
 
         fig = viz.plot_multi_panel_groups_with_stats(
             plot_df_display, display_names, group_col, stats_dict,
-            ncols=3, plot_type=settings['plot_type'], log_scale=False,
+            ncols=6, plot_type=settings['plot_type'], log_scale=False,
             show_points=settings['show_points'], ylabel='% of Total BA'
         )
 
@@ -1622,7 +1635,7 @@ def render_ratios_tab(processed, settings):
         fig = viz.plot_threeway_multi_panel(
             data=combined, value_cols=selected_ratios,
             factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-            threeway_results=tw_stats, ncols=3,
+            threeway_results=tw_stats, ncols=6,
             factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
             ylabel='Ratio', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=log_scale
@@ -1634,7 +1647,7 @@ def render_ratios_tab(processed, settings):
         fig_other = viz.plot_threeway_multi_panel(
             data=combined, value_cols=selected_ratios,
             factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-            threeway_results=tw_stats_other, ncols=3,
+            threeway_results=tw_stats_other, ncols=6,
             factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
             ylabel='Ratio', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=not log_scale
@@ -1646,7 +1659,7 @@ def render_ratios_tab(processed, settings):
             fig_int = viz.plot_threeway_interaction_multi_panel(
                 data=combined, value_cols=selected_ratios,
                 factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-                threeway_results=tw_stats, ncols=3,
+                threeway_results=tw_stats, ncols=6,
                 factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                 ylabel='Ratio'
             )
@@ -1672,7 +1685,7 @@ def render_ratios_tab(processed, settings):
         fig = viz.plot_twoway_multi_panel(
             data=combined, value_cols=selected_ratios,
             factor_a_col=fa_col, factor_b_col=fb_col,
-            twoway_results=tw_stats, ncols=3,
+            twoway_results=tw_stats, ncols=6,
             factor_a_name=fa_name, factor_b_name=fb_name,
             ylabel='Ratio', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=log_scale
@@ -1684,7 +1697,7 @@ def render_ratios_tab(processed, settings):
         fig_other = viz.plot_twoway_multi_panel(
             data=combined, value_cols=selected_ratios,
             factor_a_col=fa_col, factor_b_col=fb_col,
-            twoway_results=tw_stats_other, ncols=3,
+            twoway_results=tw_stats_other, ncols=6,
             factor_a_name=fa_name, factor_b_name=fb_name,
             ylabel='Ratio', show_points=settings['show_points'],
             plot_type=settings['plot_type'], log_scale=not log_scale
@@ -1696,7 +1709,7 @@ def render_ratios_tab(processed, settings):
             fig_int = viz.plot_twoway_interaction_multi_panel(
                 data=combined, value_cols=selected_ratios,
                 factor_a_col=fa_col, factor_b_col=fb_col,
-                twoway_results=tw_stats, ncols=3,
+                twoway_results=tw_stats, ncols=6,
                 factor_a_name=fa_name, factor_b_name=fb_name,
                 ylabel='Ratio'
             )
@@ -1717,7 +1730,7 @@ def render_ratios_tab(processed, settings):
         # Multi-panel figure
         fig = viz.plot_multi_panel_groups_with_stats(
             combined, selected_ratios, group_col, stats_dict,
-            ncols=3, plot_type=settings['plot_type'], log_scale=log_scale,
+            ncols=6, plot_type=settings['plot_type'], log_scale=log_scale,
             show_points=settings['show_points'], ylabel='Ratio'
         )
         st.pyplot(fig)
@@ -1727,7 +1740,7 @@ def render_ratios_tab(processed, settings):
         # Generate other version for export
         fig_other = viz.plot_multi_panel_groups_with_stats(
             combined, selected_ratios, group_col, stats_dict_other,
-            ncols=3, plot_type=settings['plot_type'], log_scale=not log_scale,
+            ncols=6, plot_type=settings['plot_type'], log_scale=not log_scale,
             show_points=settings['show_points'], ylabel='Ratio'
         )
         store_figure(fig_other, f'ratios{"_log" if not log_scale else ""}')
