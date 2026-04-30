@@ -560,8 +560,8 @@ class BileAcidDataProcessor:
     # ================================================================
     # TWO-WAY ANOVA: Factor Detection Methods
     # ================================================================
-
-    FACTOR_PREFIX = 'Factor_'
+    
+    FACTOR_PREFIX = 'factor_' 
     METADATA_SHEET_PATTERNS = [
         r'sample[\s_-]*meta',
         r'metadata',
@@ -589,7 +589,7 @@ class BileAcidDataProcessor:
 
         for col in df.columns:
             col_str = str(col).strip()
-            if col_str.startswith(self.FACTOR_PREFIX) and len(col_str) > len(self.FACTOR_PREFIX):
+            if col_str.lower().startswith(self.FACTOR_PREFIX) and len(col_str) > len(self.FACTOR_PREFIX):
                 factor_name = col_str[len(self.FACTOR_PREFIX):]
                 if col_str in df.columns:
                     col_data = df[col_str].dropna()

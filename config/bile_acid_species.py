@@ -444,6 +444,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CA,
         hydroxyl_positions=[3, 7, 12],
         notes="Sulfated at position 7",
+        pKa=4.5,
     ),
     "CA-3-S": BileAcidSpecies(
         abbreviation="CA-3-S",
@@ -453,6 +454,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CA,
         hydroxyl_positions=[3, 7, 12],
         notes="Sulfated at position 3",
+        pKa=4.5,
     ),
     "CDCA-3-S": BileAcidSpecies(
         abbreviation="CDCA-3-S",
@@ -462,6 +464,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CDCA,
         hydroxyl_positions=[3, 7],
         notes="Sulfated at position 3",
+        pKa=4.5,
     ),
     "DCA-3-S": BileAcidSpecies(
         abbreviation="DCA-3-S",
@@ -471,6 +474,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.DCA,
         hydroxyl_positions=[3, 12],
         notes="Sulfated at position 3",
+        pKa=4.5,
     ),
     "LCA-3-S": BileAcidSpecies(
         abbreviation="LCA-3-S",
@@ -480,6 +484,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.LCA,
         hydroxyl_positions=[3],
         notes="Sulfated at position 3",
+        pKa=4.5,
     ),
     "UDCA-3-S": BileAcidSpecies(
         abbreviation="UDCA-3-S",
@@ -489,6 +494,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.UDCA,
         hydroxyl_positions=[3, 7],
         notes="Sulfated at position 3",
+        pKa=4.5,
     ),
     
     # -------------------------------------------------------------------------
@@ -502,6 +508,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CA,
         hydroxyl_positions=[3, 7, 12],
         notes="N-acyl amidated form",
+        pKa=4.42
     ),
     "NDCA": BileAcidSpecies(
         abbreviation="NDCA",
@@ -511,6 +518,7 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.DCA,
         hydroxyl_positions=[3, 12],
         notes="N-acyl amidated form",
+        pKa=4.53
     ),
 }
 
