@@ -29,6 +29,7 @@ from config.bile_acid_species import (
 from modules.data_processing import BileAcidDataProcessor, ProcessedData, validate_data_quality
 from modules.statistical_tests import StatisticalAnalyzer, format_analysis_report, format_twoway_apa, format_threeway_apa
 from modules.visualization import BileAcidVisualizer
+from modules.hydrophobicity import HydrophobicityCalculator
 from modules.report_generation import (
     ExcelReportGenerator, SignificancePlotter,
     ComprehensiveAnalysisResults, format_apa_statistics,
@@ -68,7 +69,9 @@ def init_session_state():
         'last_settings': None,  # Track settings that affect data/stats
         'zip_data': None,  # Cached ZIP bytes for download
         'zip_figure_count': 0,  # Number of figures in cached ZIP
-        'selected_sheet': None  # User-selected data sheet
+        'selected_sheet': None,  # User-selected data sheet
+        'hydrophobicity': None,  # HI_pool and hydrophobic_load DataFrame
+        'hydro_tissue': 'blood',  # Current tissue for HI calculation
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -134,6 +137,9 @@ def _ensure_report_generator(processed, settings):
         totals=processed.totals,
         ratios=processed.ratios,
         percentages=processed.percentages,
+        hydrophobicity=st.session_state.hydrophobicity,
+        hydro_ph=HydrophobicityCalculator.PH_ENVIRONMENTS[settings.get('tissue', 'blood')],
+        hydro_tissue=settings.get('tissue', 'blood'),
         alpha=settings['alpha'],
         factors=factors,
         n_factors=n_factors,
@@ -176,7 +182,7 @@ def compute_all_statistics(processed, settings):
     results = report_gen.run_all_statistics()
     st.session_state.analysis_results = results
     st.session_state.stats_computed = True
-    st.session_state.stats_sections_done = {'individual_ba', 'totals', 'ratios', 'percentages', 'categories'}
+    st.session_state.stats_sections_done = {'individual_ba', 'totals', 'ratios', 'percentages', 'categories', 'hydrophobicity'}
     return results
 
 
@@ -708,6 +714,23 @@ def render_sidebar():
              "kept if ANY group has ≥ (100 − threshold)% detected values."
     )
     
+    st.sidebar.markdown("### 🧪 Hydrophobicity")
+    tissue_options = {
+        "blood": "Blood / Serum (pH 7.4)",
+        "duodenum": "Duodenum (pH 6.0)",
+        "jejunum": "Jejunum (pH 6.5)",
+        "ileum": "Ileum (pH 7.0)",
+        "cecum": "Cecum (pH 5.7)",
+        "colon": "Colon (pH 6.5)",
+        "stomach": "Stomach (pH 2.0)",
+    }
+    tissue = st.sidebar.selectbox(
+        "Sample tissue",
+        list(tissue_options.keys()),
+        format_func=lambda x: tissue_options[x],
+        help="Sets pH for hydrophobicity index calculation. At blood pH (7.4), all bile acids are >99% ionized."
+    )
+
     st.sidebar.markdown("### 📈 Analysis")
     alpha = st.sidebar.slider("Significance (α)", 0.01, 0.10, 0.05, 0.01)
     plot_type = st.sidebar.selectbox("Plot type", ["box", "violin", "bar", "strip"])
@@ -743,7 +766,8 @@ def render_sidebar():
             'show_points': show_points,
             'color_palette': color_palette, 'plot_style': plot_style,
             'dilution_factor': dilution_factor,
-            'units': units}
+            'units': units,
+            'tissue': tissue}
 
 
 def render_concentrations_tab(processed, settings):
@@ -1796,6 +1820,176 @@ def render_ratios_tab(processed, settings):
         st.dataframe(combined[display_cols], width="stretch")
 
 
+def render_hydrophobicity_tab(processed, settings):
+    """Render hydrophobicity index tab with group comparisons."""
+    st.markdown("### Hydrophobicity Index")
+
+    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    group_col = processed.structure.group_col
+    results = st.session_state.analysis_results
+    hydro_df = st.session_state.hydrophobicity
+    is_threeway = results is not None and getattr(results, 'is_threeway', False)
+    is_twoway = results is not None and results.is_twoway
+
+    if not group_col:
+        st.warning("No group column detected.")
+        return
+
+    if hydro_df is None or hydro_df.empty:
+        st.warning("Hydrophobicity data not available.")
+        return
+
+    data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
+    data = data[data[group_col].astype(str).str.lower() != 'nan']
+
+    if is_threeway:
+        fa_col, fb_col, fc_col = results.factor_a_col, results.factor_b_col, results.factor_c_col
+        combined = pd.concat([data[[fa_col, fb_col, fc_col]], hydro_df.loc[data.index]], axis=1)
+    elif is_twoway:
+        fa_col = results.factor_a_col
+        fb_col = results.factor_b_col
+        combined = pd.concat([data[[fa_col, fb_col]], hydro_df.loc[data.index]], axis=1)
+    else:
+        combined = pd.concat([data[[group_col]], hydro_df.loc[data.index]], axis=1)
+
+    hydro_cols = [c for c in hydro_df.columns if not combined[c].isna().all()]
+
+    if not hydro_cols:
+        st.warning("No hydrophobicity data available for selected samples.")
+        return
+
+    tissue = settings.get('tissue', 'blood')
+    tissue_ph = HydrophobicityCalculator.PH_ENVIRONMENTS[tissue]
+    tissue_label = tissue.capitalize()
+    st.info(f"**HI_pool**: concentration-weighted hydrophobicity index (Heuman scale) at **pH {tissue_ph}** ({tissue_label}). "
+            "**Hydrophobic Load**: total concentration x HI_pool (captures both composition and burden).")
+
+    if is_threeway:
+        fa_name, fb_name, fc_name = results.factor_a_name, results.factor_b_name, results.factor_c_name
+        st.markdown(f"**Three-way ANOVA**: {fa_name} x {fb_name} x {fc_name}")
+
+        tw_stats = {c: results.threeway_hydrophobicity.get(c) for c in hydro_cols
+                   if c in results.threeway_hydrophobicity}
+
+        fig = viz.plot_threeway_multi_panel(
+            data=combined, value_cols=hydro_cols,
+            factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
+            threeway_results=tw_stats, ncols=2,
+            factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
+            ylabel='HI Score', show_points=settings['show_points'],
+            plot_type=settings['plot_type'], log_scale=False
+        )
+        st.pyplot(fig)
+        store_figure(fig, 'hydrophobicity_threeway')
+        plt.close(fig)
+
+        with st.expander("Three-Way ANOVA Summary"):
+            if tw_stats:
+                st.dataframe(get_threeway_differences_summary(tw_stats), hide_index=True)
+
+    elif is_twoway:
+        fa_name = results.factor_a_name
+        fb_name = results.factor_b_name
+        st.markdown(f"**Two-way ANOVA**: {fa_name} x {fb_name}")
+
+        tw_stats = {c: results.twoway_hydrophobicity.get(c) for c in hydro_cols
+                   if c in results.twoway_hydrophobicity}
+
+        fig = viz.plot_twoway_multi_panel(
+            data=combined, value_cols=hydro_cols,
+            factor_a_col=fa_col, factor_b_col=fb_col,
+            twoway_results=tw_stats, ncols=2,
+            factor_a_name=fa_name, factor_b_name=fb_name,
+            ylabel='HI Score', show_points=settings['show_points'],
+            plot_type=settings['plot_type'], log_scale=False
+        )
+        st.pyplot(fig)
+        store_figure(fig, 'hydrophobicity_twoway')
+        plt.close(fig)
+
+        with st.expander("Two-Way ANOVA Summary"):
+            if tw_stats:
+                st.dataframe(get_twoway_differences_summary(tw_stats), hide_index=True)
+
+    else:
+        stats_dict = {c: results.hydrophobicity_results.get(c) for c in hydro_cols
+                     if c in results.hydrophobicity_results}
+
+        fig = viz.plot_multi_panel_groups_with_stats(
+            combined, hydro_cols, group_col, stats_dict,
+            ncols=2, plot_type=settings['plot_type'], log_scale=False,
+            show_points=settings['show_points'], ylabel='HI Score'
+        )
+        st.pyplot(fig)
+        store_figure(fig, 'hydrophobicity')
+        plt.close(fig)
+
+        with st.expander("Statistical Summary"):
+            rows = []
+            for c in hydro_cols:
+                res = stats_dict.get(c)
+                if res:
+                    rows.append({
+                        'Metric': c,
+                        'Test': res.main_test.test_type.value,
+                        'P-value': f"{res.main_test.pvalue:.4f}",
+                        'Significant': 'Yes' if res.main_test.significant else '',
+                        'Effect Size': f"{res.main_test.effect_size:.3f}" if res.main_test.effect_size else 'N/A',
+                        'APA': format_apa_statistics(res)
+                    })
+            if rows:
+                st.dataframe(pd.DataFrame(rows), hide_index=True)
+
+    with st.expander("Group Means"):
+        summary_data = []
+        for metric in hydro_cols:
+            gcol = group_col
+            if is_threeway:
+                gcol = fa_col
+            elif is_twoway:
+                gcol = fa_col
+            for group in combined[gcol].unique():
+                group_data = combined[combined[gcol] == group][metric]
+                summary_data.append({
+                    'Metric': metric,
+                    'Group': group,
+                    'Mean': f"{group_data.mean():.4f}",
+                    'SD': f"{group_data.std():.4f}",
+                    'Median': f"{group_data.median():.4f}"
+                })
+        if summary_data:
+            summary_df = pd.DataFrame(summary_data)
+            pivot_df = summary_df.pivot_table(index='Metric', columns='Group', values='Mean', aggfunc='first')
+            st.dataframe(pivot_df, width="stretch")
+
+    with st.expander(f"Effective HI Reference Table (pH {tissue_ph} — {tissue_label})"):
+        hi_calc = HydrophobicityCalculator(pH=tissue_ph)
+        ref = hi_calc.calculate_protonation_table()
+        available_bas = [c for c in processed.structure.bile_acid_cols if c in ref]
+        ref_rows = []
+        for ba in sorted(available_bas, key=lambda x: ref[x]['hi_effective'], reverse=True):
+            info = ref[ba]
+            ref_rows.append({
+                'Species': ba,
+                'HI (ionized)': f"{info['hi_ionized']:+.2f}",
+                'HI (protonated)': f"{info['hi_protonated']:+.2f}",
+                'HI (effective)': f"{info['hi_effective']:+.4f}",
+                'pKa': f"{info['pKa']:.2f}",
+                '% Protonated': f"{info['f_protonated']*100:.4f}%",
+            })
+        if ref_rows:
+            st.dataframe(pd.DataFrame(ref_rows), hide_index=True, height=400)
+
+    with st.expander("View hydrophobicity data"):
+        if is_threeway:
+            display_cols = [fa_col, fb_col, fc_col] + hydro_cols
+        elif is_twoway:
+            display_cols = [fa_col, fb_col] + hydro_cols
+        else:
+            display_cols = [group_col] + hydro_cols
+        st.dataframe(combined[display_cols], width="stretch")
+
+
 def _count_sig_twoway(twoway_dict, alpha=0.05):
     """Count significant results in a two-way ANOVA results dictionary."""
     count = 0
@@ -2236,6 +2430,14 @@ def main():
                     st.write("Detecting structure & applying LOD handling...")
                     processed = processor.load_and_process(tmp_path, sheet_name=selected_sheet)
                     st.session_state.processed_data = processed
+
+                    tissue_ph = HydrophobicityCalculator.PH_ENVIRONMENTS[settings['tissue']]
+                    hi_calc = HydrophobicityCalculator(pH=tissue_ph)
+                    hi_pool = hi_calc.calculate_pool_hi(processed.concentrations, processed.structure.bile_acid_cols)
+                    hi_load = hi_calc.calculate_hydrophobic_load(processed.concentrations, processed.structure.bile_acid_cols)
+                    st.session_state.hydrophobicity = pd.DataFrame({"HI_pool": hi_pool, "hydrophobic_load": hi_load})
+                    st.session_state.hydro_tissue = settings['tissue']
+
                     status.update(label="Data processed!", state="complete", expanded=False)
                 except Exception as e:
                     status.update(label="Processing failed", state="error")
@@ -2244,7 +2446,19 @@ def main():
     
     if st.session_state.processed_data:
         processed = st.session_state.processed_data
-        
+
+        if st.session_state.hydro_tissue != settings['tissue'] and st.session_state.hydrophobicity is not None:
+            tissue_ph = HydrophobicityCalculator.PH_ENVIRONMENTS[settings['tissue']]
+            hi_calc = HydrophobicityCalculator(pH=tissue_ph)
+            hi_pool = hi_calc.calculate_pool_hi(processed.concentrations, processed.structure.bile_acid_cols)
+            hi_load = hi_calc.calculate_hydrophobic_load(processed.concentrations, processed.structure.bile_acid_cols)
+            st.session_state.hydrophobicity = pd.DataFrame({"HI_pool": hi_pool, "hydrophobic_load": hi_load})
+            st.session_state.hydro_tissue = settings['tissue']
+            st.session_state.stats_sections_done.discard('hydrophobicity')
+            st.session_state.stats_computed = False
+            st.session_state.report_generator = None
+            st.session_state.zip_data = None
+
         quality = validate_data_quality(processed)
         c1, c2, c3 = st.columns(3)
         c1.metric("Samples", quality['n_samples'])
@@ -2295,7 +2509,7 @@ def main():
             # Three-way: use a selector so only ONE section computes at a time
             # (st.tabs renders all content on every run, which OOMs on Cloud)
             tab_options = ["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
-                           "🗺️ Heatmap", "📊 Statistics", "💾 Export"]
+                           "🧪 Hydrophobicity", "🗺️ Heatmap", "📊 Statistics", "💾 Export"]
             active_tab = st.segmented_control("Section", tab_options, default="📈 Concentrations")
 
             # Map tab to stats section(s) needed
@@ -2304,9 +2518,10 @@ def main():
                 "📊 Totals": ['totals'],
                 "📉 Percentages": ['percentages'],
                 "🔢 Ratios": ['ratios'],
+                "🧪 Hydrophobicity": ['hydrophobicity'],
                 "🗺️ Heatmap": [],
-                "📊 Statistics": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories'],
-                "💾 Export": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories'],
+                "📊 Statistics": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories', 'hydrophobicity'],
+                "💾 Export": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories', 'hydrophobicity'],
             }
             needed = tab_sections.get(active_tab, [])
             missing = [s for s in needed if s not in st.session_state.stats_sections_done]
@@ -2328,6 +2543,8 @@ def main():
                 render_percentages_tab(processed, settings)
             elif active_tab == "🔢 Ratios":
                 render_ratios_tab(processed, settings)
+            elif active_tab == "🧪 Hydrophobicity":
+                render_hydrophobicity_tab(processed, settings)
             elif active_tab == "🗺️ Heatmap":
                 render_heatmap_tab(processed, settings)
             elif active_tab == "📊 Statistics":
@@ -2341,14 +2558,15 @@ def main():
                 status.update(label="Statistics ready", state="complete")
 
             tabs = st.tabs(["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
-                            "🗺️ Heatmap", "📊 Statistics", "💾 Export"])
+                            "🧪 Hydrophobicity", "🗺️ Heatmap", "📊 Statistics", "💾 Export"])
             with tabs[0]: render_concentrations_tab(processed, settings)
             with tabs[1]: render_totals_tab(processed, settings)
             with tabs[2]: render_percentages_tab(processed, settings)
             with tabs[3]: render_ratios_tab(processed, settings)
-            with tabs[4]: render_heatmap_tab(processed, settings)
-            with tabs[5]: render_statistics_tab(processed, settings)
-            with tabs[6]: render_export_tab(processed, settings)
+            with tabs[4]: render_hydrophobicity_tab(processed, settings)
+            with tabs[5]: render_heatmap_tab(processed, settings)
+            with tabs[6]: render_statistics_tab(processed, settings)
+            with tabs[7]: render_export_tab(processed, settings)
     
     else:
         # Show expected input format when no data is loaded

@@ -63,6 +63,8 @@ class BileAcidSpecies:
     is_iso_form: bool = False
     notes: str = ""
     pKa: float = 0.00
+    hi_ionized: float = 0.0
+    hi_protonated: float = 0.0
 
 
 # =============================================================================
@@ -83,7 +85,9 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         origin=Origin.PRIMARY,
         core_structure=CoreStructure.CA,
         hydroxyl_positions=[3, 7, 12],
-        pKa= 4.98,
+        pKa=4.98,
+        hi_ionized=0.13,
+        hi_protonated=0.38,
     ),
     "CDCA": BileAcidSpecies(
         abbreviation="CDCA",
@@ -93,8 +97,10 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CDCA,
         hydroxyl_positions=[3, 7],
         pKa=4.6,
+        hi_ionized=0.59,
+        hi_protonated=0.84,
     ),
-    
+
     # -------------------------------------------------------------------------
     # UNCONJUGATED SECONDARY BILE ACIDS
     # -------------------------------------------------------------------------
@@ -107,6 +113,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3, 12],
         notes="Derived from CA by 7-dehydroxylation",
         pKa=4.65,
+        hi_ionized=0.72,
+        hi_protonated=0.97,
     ),
     "LCA": BileAcidSpecies(
         abbreviation="LCA",
@@ -117,6 +125,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3],
         notes="Derived from CDCA by 7-dehydroxylation",
         pKa=4.79,
+        hi_ionized=1.00,
+        hi_protonated=1.25,
     ),
     "UDCA": BileAcidSpecies(
         abbreviation="UDCA",
@@ -127,6 +137,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3, 7],
         notes="7-beta epimer of CDCA",
         pKa=4.6,
+        hi_ionized=-0.31,
+        hi_protonated=-0.06,
     ),
     "isoDCA": BileAcidSpecies(
         abbreviation="isoDCA",
@@ -137,6 +149,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3, 12],
         is_iso_form=True,
         pKa=4.48,
+        hi_ionized=0.45,  # est
+        hi_protonated=0.70,  # est
     ),
     "isoLCA": BileAcidSpecies(
         abbreviation="isoLCA",
@@ -147,6 +161,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3],
         is_iso_form=True,
         pKa=4.79,
+        hi_ionized=0.87,  # est
+        hi_protonated=1.12,  # est
     ),
     "allo_isoLCA": BileAcidSpecies(
         abbreviation="allo_isoLCA",
@@ -158,6 +174,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         is_iso_form=True,
         notes="5-alpha configuration",
         pKa=4.79,
+        hi_ionized=0.85,  # est
+        hi_protonated=1.10,  # est
     ),
     "HCA": BileAcidSpecies(
         abbreviation="HCA",
@@ -167,6 +185,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.HCA,
         hydroxyl_positions=[3, 6, 7],
         pKa=4.6,
+        hi_ionized=-0.27,  # est, inferred from GHCA [H89] -0.40 + ~0.13
+        hi_protonated=-0.02,  # est
     ),
     "HDCA": BileAcidSpecies(
         abbreviation="HDCA",
@@ -176,6 +196,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.HDCA,
         hydroxyl_positions=[3, 6],
         pKa=4.79,
+        hi_ionized=-0.18,  # est, inferred from THDCA [H89] -0.31 + ~0.13
+        hi_protonated=0.07,  # est
     ),
     "MDCA": BileAcidSpecies(
         abbreviation="MDCA",
@@ -185,8 +207,10 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.MDCA,
         hydroxyl_positions=[3, 6],
         pKa=4.79,
+        hi_ionized=-0.10,  # est, 6beta-OH (axial) slightly less polar than HDCA 6alpha-OH
+        hi_protonated=0.15,  # est
     ),
-    
+
     # -------------------------------------------------------------------------
     # UNCONJUGATED MURICHOLIC ACIDS (trace in humans)
     # -------------------------------------------------------------------------
@@ -198,6 +222,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.MCA,
         hydroxyl_positions=[3, 6, 7],
         pKa=4.6,
+        hi_ionized=-0.65,  # est, inferred from TwMCA
+        hi_protonated=-0.40,  # est
     ),
     "aMCA": BileAcidSpecies(
         abbreviation="aMCA",
@@ -207,6 +233,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.MCA,
         hydroxyl_positions=[3, 6, 7],
         pKa=4.6,
+        hi_ionized=-0.71,  # est, inferred from TaMCA [H89] -0.84 + ~0.13
+        hi_protonated=-0.46,  # est
     ),
     "bMCA": BileAcidSpecies(
         abbreviation="bMCA",
@@ -216,8 +244,10 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.MCA,
         hydroxyl_positions=[3, 6, 7],
         pKa=4.6,
+        hi_ionized=-0.65,  # est, inferred from TbMCA [H89] -0.78 + ~0.13
+        hi_protonated=-0.40,  # est
     ),
-    
+
     # -------------------------------------------------------------------------
     # KETO DERIVATIVES (UNCONJUGATED)
     # -------------------------------------------------------------------------
@@ -230,6 +260,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3, 12],
         is_keto_derivative=True,
         pKa=4.44,
+        hi_ionized=0.42,  # est
+        hi_protonated=0.67,  # est
     ),
     "7keto_LCA": BileAcidSpecies(
         abbreviation="7keto_LCA",
@@ -240,6 +272,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3],
         is_keto_derivative=True,
         pKa=4.56,
+        hi_ionized=0.75,  # est
+        hi_protonated=1.00,  # est
     ),
     "12keto_LCA": BileAcidSpecies(
         abbreviation="12keto_LCA",
@@ -250,6 +284,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3],
         is_keto_derivative=True,
         pKa=4.56,
+        hi_ionized=0.75,  # est
+        hi_protonated=1.00,  # est
     ),
     "3KetoLCA": BileAcidSpecies(
         abbreviation="3KetoLCA",
@@ -259,6 +295,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.LCA,
         is_keto_derivative=True,
         pKa=4.56,
+        hi_ionized=0.90,  # est
+        hi_protonated=1.15,  # est
     ),
     "3Keto,7a,12a(OH)2": BileAcidSpecies(
         abbreviation="3Keto,7a,12a(OH)2",
@@ -270,8 +308,10 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         is_keto_derivative=True,
         notes="Oxidized CA derivative",
         pKa=4.76,
+        hi_ionized=-0.05,  # est
+        hi_protonated=0.20,  # est
     ),
-    
+
     # -------------------------------------------------------------------------
     # GLYCINE-CONJUGATED BILE ACIDS
     # -------------------------------------------------------------------------
@@ -283,6 +323,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CA,
         hydroxyl_positions=[3, 7, 12],
         pKa=3.9,
+        hi_ionized=0.07,
+        hi_protonated=0.32,
     ),
     "GCDCA": BileAcidSpecies(
         abbreviation="GCDCA",
@@ -292,6 +334,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CDCA,
         hydroxyl_positions=[3, 7],
         pKa=3.9,
+        hi_ionized=0.51,
+        hi_protonated=0.76,
     ),
     "GDCA": BileAcidSpecies(
         abbreviation="GDCA",
@@ -301,6 +345,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.DCA,
         hydroxyl_positions=[3, 12],
         pKa=3.9,
+        hi_ionized=0.65,
+        hi_protonated=0.90,
     ),
     "GLCA": BileAcidSpecies(
         abbreviation="GLCA",
@@ -310,6 +356,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.LCA,
         hydroxyl_positions=[3],
         pKa=3.9,
+        hi_ionized=1.05,
+        hi_protonated=1.30,
     ),
     "GUDCA": BileAcidSpecies(
         abbreviation="GUDCA",
@@ -319,6 +367,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.UDCA,
         hydroxyl_positions=[3, 7],
         pKa=3.9,
+        hi_ionized=-0.43,
+        hi_protonated=-0.18,
     ),
     "GHCA": BileAcidSpecies(
         abbreviation="GHCA",
@@ -327,6 +377,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         origin=Origin.SECONDARY,
         core_structure=CoreStructure.HCA,
         hydroxyl_positions=[3, 6, 7],
+        hi_ionized=-0.40,
+        hi_protonated=-0.15,
         pKa=3.9,
     ),
     "GHDCA": BileAcidSpecies(
@@ -337,6 +389,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.HDCA,
         hydroxyl_positions=[3, 6],
         pKa=3.9,
+        hi_ionized=-0.26,
+        hi_protonated=-0.01,
     ),
     "GbMCA": BileAcidSpecies(
         abbreviation="GbMCA",
@@ -346,8 +400,10 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.MCA,
         hydroxyl_positions=[3, 6, 7],
         pKa=3.9,
+        hi_ionized=-0.73,
+        hi_protonated=-0.48,
     ),
-    
+
     # -------------------------------------------------------------------------
     # TAURINE-CONJUGATED BILE ACIDS
     # -------------------------------------------------------------------------
@@ -359,6 +415,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CA,
         hydroxyl_positions=[3, 7, 12],
         pKa=1.5,
+        hi_ionized=0.00,
+        hi_protonated=0.20,
     ),
     "TCDCA": BileAcidSpecies(
         abbreviation="TCDCA",
@@ -368,6 +426,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CDCA,
         hydroxyl_positions=[3, 7],
         pKa=1.5,
+        hi_ionized=0.46,
+        hi_protonated=0.66,
     ),
     "TDCA": BileAcidSpecies(
         abbreviation="TDCA",
@@ -377,6 +437,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.DCA,
         hydroxyl_positions=[3, 12],
         pKa=1.5,
+        hi_ionized=0.59,
+        hi_protonated=0.79,
     ),
     "TLCA": BileAcidSpecies(
         abbreviation="TLCA",
@@ -386,6 +448,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.LCA,
         hydroxyl_positions=[3],
         pKa=1.5,
+        hi_ionized=1.00,
+        hi_protonated=1.20,
     ),
     "TUDCA": BileAcidSpecies(
         abbreviation="TUDCA",
@@ -395,6 +459,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.UDCA,
         hydroxyl_positions=[3, 7],
         pKa=1.5,
+        hi_ionized=-0.47,
+        hi_protonated=-0.27,
     ),
     "THDCA": BileAcidSpecies(
         abbreviation="THDCA",
@@ -404,6 +470,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.HDCA,
         hydroxyl_positions=[3, 6],
         pKa=1.5,
+        hi_ionized=-0.31,
+        hi_protonated=-0.11,
     ),
     "TwMCA": BileAcidSpecies(
         abbreviation="TwMCA",
@@ -413,6 +481,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.MCA,
         hydroxyl_positions=[3, 6, 7],
         pKa=1.5,
+        hi_ionized=-0.75,  # est, omega-MCA (6beta,7beta-OH); less hydrophilic than alpha-MCA
+        hi_protonated=-0.55,  # est
     ),
     "TaMCA": BileAcidSpecies(
         abbreviation="TaMCA",
@@ -422,6 +492,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.MCA,
         hydroxyl_positions=[3, 6, 7],
         pKa=1.5,
+        hi_ionized=-0.84,
+        hi_protonated=-0.64,
     ),
     "TbMCA": BileAcidSpecies(
         abbreviation="TbMCA",
@@ -431,8 +503,10 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.MCA,
         hydroxyl_positions=[3, 6, 7],
         pKa=1.5,
+        hi_ionized=-0.78,
+        hi_protonated=-0.58,
     ),
-    
+
     # -------------------------------------------------------------------------
     # SULFATED BILE ACIDS
     # -------------------------------------------------------------------------
@@ -445,6 +519,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3, 7, 12],
         notes="Sulfated at position 7",
         pKa=4.5,
+        hi_ionized=-0.63,  # est
+        hi_protonated=-0.48,  # est
     ),
     "CA-3-S": BileAcidSpecies(
         abbreviation="CA-3-S",
@@ -455,6 +531,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3, 7, 12],
         notes="Sulfated at position 3",
         pKa=4.5,
+        hi_ionized=-0.63,  # est
+        hi_protonated=-0.48,  # est
     ),
     "CDCA-3-S": BileAcidSpecies(
         abbreviation="CDCA-3-S",
@@ -465,6 +543,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3, 7],
         notes="Sulfated at position 3",
         pKa=4.5,
+        hi_ionized=-0.09,  # est
+        hi_protonated=0.06,  # est
     ),
     "DCA-3-S": BileAcidSpecies(
         abbreviation="DCA-3-S",
@@ -475,6 +555,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3, 12],
         notes="Sulfated at position 3",
         pKa=4.5,
+        hi_ionized=0.04,  # est
+        hi_protonated=0.19,  # est
     ),
     "LCA-3-S": BileAcidSpecies(
         abbreviation="LCA-3-S",
@@ -485,6 +567,8 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3],
         notes="Sulfated at position 3",
         pKa=4.5,
+        hi_ionized=0.45,  # est
+        hi_protonated=0.60,  # est
     ),
     "UDCA-3-S": BileAcidSpecies(
         abbreviation="UDCA-3-S",
@@ -495,8 +579,10 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         hydroxyl_positions=[3, 7],
         notes="Sulfated at position 3",
         pKa=4.5,
+        hi_ionized=-0.93,  # est
+        hi_protonated=-0.78,  # est
     ),
-    
+
     # -------------------------------------------------------------------------
     # N-ACYL CONJUGATED BILE ACIDS
     # -------------------------------------------------------------------------
@@ -508,7 +594,9 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.CA,
         hydroxyl_positions=[3, 7, 12],
         notes="N-acyl amidated form",
-        pKa=4.42
+        pKa=4.42,
+        hi_ionized=-0.10,  # est
+        hi_protonated=0.15,  # est
     ),
     "NDCA": BileAcidSpecies(
         abbreviation="NDCA",
@@ -518,7 +606,9 @@ BILE_ACID_PANEL: Dict[str, BileAcidSpecies] = {
         core_structure=CoreStructure.DCA,
         hydroxyl_positions=[3, 12],
         notes="N-acyl amidated form",
-        pKa=4.53
+        pKa=4.53,
+        hi_ionized=0.60,  # est
+        hi_protonated=0.85,  # est
     ),
 }
 

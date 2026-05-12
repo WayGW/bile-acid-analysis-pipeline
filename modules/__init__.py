@@ -3,3 +3,4 @@ from .data_processing import BileAcidDataProcessor, ProcessedData, validate_data
 from .statistical_tests import StatisticalAnalyzer, format_analysis_report
 from .visualization import BileAcidVisualizer
 from .report_generation import ExcelReportGenerator, SignificancePlotter, ComprehensiveAnalysisResults
+from .hydrophobicity import HydrophobicityCalculator

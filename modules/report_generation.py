@@ -46,6 +46,7 @@ class ComprehensiveAnalysisResults:
     ratios_results: Dict[str, FullAnalysisResult] = field(default_factory=dict)
     percentages_results: Dict[str, FullAnalysisResult] = field(default_factory=dict)
     category_results: Dict[str, FullAnalysisResult] = field(default_factory=dict)
+    hydrophobicity_results: Dict[str, FullAnalysisResult] = field(default_factory=dict)
 
     # Two-way ANOVA results (populated when n_factors == 2)
     is_twoway: bool = False
@@ -53,6 +54,7 @@ class ComprehensiveAnalysisResults:
     twoway_totals: Dict[str, FullTwoWayAnalysisResult] = field(default_factory=dict)
     twoway_ratios: Dict[str, FullTwoWayAnalysisResult] = field(default_factory=dict)
     twoway_percentages: Dict[str, FullTwoWayAnalysisResult] = field(default_factory=dict)
+    twoway_hydrophobicity: Dict[str, FullTwoWayAnalysisResult] = field(default_factory=dict)
     factor_a_name: str = ""
     factor_b_name: str = ""
     factor_a_col: str = ""
@@ -64,6 +66,7 @@ class ComprehensiveAnalysisResults:
     threeway_totals: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
     threeway_ratios: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
     threeway_percentages: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
+    threeway_hydrophobicity: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
     factor_c_name: str = ""
     factor_c_col: str = ""
 
@@ -77,7 +80,6 @@ class ComprehensiveAnalysisResults:
     log_threeway_individual_ba: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
     log_threeway_totals: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
     log_threeway_ratios: Dict[str, FullThreeWayAnalysisResult] = field(default_factory=dict)
-
     # LOD exclusion tracking
     lod_excluded: Dict[str, float] = field(default_factory=dict)  # {analyte: lod_pct}
     lod_threshold: int = 50
@@ -353,6 +355,9 @@ class ExcelReportGenerator:
         totals: Optional[pd.DataFrame] = None,
         ratios: Optional[pd.DataFrame] = None,
         percentages: Optional[pd.DataFrame] = None,
+        hydrophobicity: Optional[pd.DataFrame] = None,
+        hydro_ph: float = 7.4,
+        hydro_tissue: str = "blood",
         alpha: float = 0.05,
         # Two-way ANOVA factor info
         factors: Optional[Dict[str, str]] = None,  # {display_name: column_name}
@@ -390,6 +395,9 @@ class ExcelReportGenerator:
         self.totals = totals
         self.ratios = ratios
         self.percentages = percentages
+        self.hydrophobicity = hydrophobicity
+        self.hydro_ph = hydro_ph
+        self.hydro_tissue = hydro_tissue
 
         # Two-way factor info
         self.factors = factors or {}
@@ -525,7 +533,7 @@ class ExcelReportGenerator:
         """
         Run statistics for a single section and return updated results.
 
-        section: 'individual_ba' | 'totals' | 'ratios' | 'percentages' | 'categories'
+        section: 'individual_ba' | 'totals' | 'ratios' | 'percentages' | 'categories' | 'hydrophobicity'
         """
         valid_data = self._get_valid_data()
 
@@ -665,6 +673,19 @@ class ExcelReportGenerator:
                     self.results.category_results[cat_name] = sheet.statistical_result
             self._log(f"  Done: {len(self.results.category_results)} categories analyzed")
 
+        elif section == 'hydrophobicity':
+            if self.hydrophobicity is not None:
+                self._log(f"Running one-way ANOVA for {len(self.hydrophobicity.columns)} hydrophobicity metrics...")
+                combined = pd.concat([valid_data[[self.group_col]], self.hydrophobicity.loc[valid_data.index]], axis=1)
+                for col in self.hydrophobicity.columns:
+                    if not combined[col].isna().all():
+                        try:
+                            result = self.analyzer.analyze(combined, col, self.group_col)
+                            self.results.hydrophobicity_results[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col}: {e}")
+                self._log(f"  Done: {len(self.results.hydrophobicity_results)} hydrophobicity metrics analyzed")
+
     # --- TWO-WAY sections ---
 
     def _run_twoway_section(self, valid_data, section):
@@ -784,6 +805,21 @@ class ExcelReportGenerator:
                 if sheet.statistical_result:
                     self.results.category_results[cat_name] = sheet.statistical_result
             self._log(f"  Done: {len(self.results.category_results)} categories analyzed")
+
+        elif section == 'hydrophobicity':
+            if self.hydrophobicity is not None:
+                self._log(f"Running two-way ANOVA for {len(self.hydrophobicity.columns)} hydrophobicity metrics...")
+                combined = pd.concat([valid_data[[fa_col, fb_col]], self.hydrophobicity.loc[valid_data.index]], axis=1)
+                for col in self.hydrophobicity.columns:
+                    if not combined[col].isna().all():
+                        try:
+                            result = self.analyzer.analyze_twoway(
+                                combined, col, fa_col, fb_col, fa_name, fb_name
+                            )
+                            self.results.twoway_hydrophobicity[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (two-way): {e}")
+                self._log(f"  Done: {len(self.results.twoway_hydrophobicity)} hydrophobicity metrics analyzed")
 
     # --- THREE-WAY sections ---
 
@@ -907,9 +943,24 @@ class ExcelReportGenerator:
                     self.results.category_results[cat_name] = sheet.statistical_result
             self._log(f"  Done: {len(self.results.category_results)} categories analyzed")
 
+        elif section == 'hydrophobicity':
+            if self.hydrophobicity is not None:
+                self._log(f"Running three-way ANOVA for {len(self.hydrophobicity.columns)} hydrophobicity metrics...")
+                combined = pd.concat([valid_data[[fa_col, fb_col, fc_col]], self.hydrophobicity.loc[valid_data.index]], axis=1)
+                for col in self.hydrophobicity.columns:
+                    if not combined[col].isna().all():
+                        try:
+                            result = self.analyzer.analyze_threeway(
+                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                            )
+                            self.results.threeway_hydrophobicity[col] = result
+                        except Exception as e:
+                            print(f"Could not analyze {col} (three-way): {e}")
+                self._log(f"  Done: {len(self.results.threeway_hydrophobicity)} hydrophobicity metrics analyzed")
+
     def run_all_statistics(self) -> ComprehensiveAnalysisResults:
         """Run all statistical analyses at once (legacy entry point)."""
-        for section in ['individual_ba', 'totals', 'ratios', 'percentages', 'categories']:
+        for section in ['individual_ba', 'totals', 'ratios', 'percentages', 'categories', 'hydrophobicity']:
             self.run_section(section)
         return self._finalize_results()
 
@@ -1343,6 +1394,12 @@ class ExcelReportGenerator:
                         'Bile Acid Percentages Three-Way ANOVA',
                         self.results.threeway_percentages
                     )
+                if self.results.threeway_hydrophobicity:
+                    self._write_threeway_results_sheet(
+                        writer, 'Hydrophobicity',
+                        f'Hydrophobicity Index Three-Way ANOVA (pH {self.hydro_ph})',
+                        self.results.threeway_hydrophobicity
+                    )
 
                 for sheet_name, sheet in self.analysis_sheets.items():
                     self._write_sheet(writer, sheet)
@@ -1402,7 +1459,12 @@ class ExcelReportGenerator:
                         'Bile Acid Percentages Two-Way ANOVA',
                         self.results.twoway_percentages
                     )
-
+                if self.results.twoway_hydrophobicity:
+                    self._write_twoway_results_sheet(
+                        writer, 'Hydrophobicity',
+                        f'Hydrophobicity Index Two-Way ANOVA (pH {self.hydro_ph})',
+                        self.results.twoway_hydrophobicity
+                    )
                 # Also include category sheets for reference
                 for sheet_name, sheet in self.analysis_sheets.items():
                     self._write_sheet(writer, sheet)
@@ -1434,7 +1496,12 @@ class ExcelReportGenerator:
                         'BILE ACID RATIO COMPARISONS (log₁₀)',
                         self.results.log_ratios_results
                     )
-
+                if self.results.hydrophobicity_results:
+                    self._write_concentrations_sheet(
+                        writer, 'Hydrophobicity',
+                        f'HYDROPHOBICITY INDEX COMPARISONS (pH {self.hydro_ph})',
+                        self.results.hydrophobicity_results
+                    )
         return filepath
     
     def _write_overview_sheet(self, writer: pd.ExcelWriter):
@@ -1457,16 +1524,18 @@ class ExcelReportGenerator:
             f'{len(_excl_ba)} of {len(self.ba_cols)} ({len(_excl_ba)/len(self.ba_cols)*100:.1f}%)' if self.ba_cols else '0',
             f'{len(_excl_cat)}' if _excl_cat else 'None'
         ] if self.lod_threshold > 0 else []
+        hydro_params = ['Hydrophobicity pH', 'Hydrophobicity Tissue'] if self.hydrophobicity is not None else []
+        hydro_values = [f'{self.hydro_ph}', self.hydro_tissue.capitalize()] if self.hydrophobicity is not None else []
         summary_data = {
             'Parameter': ['Total Samples', 'Groups', 'Bile Acids Measured', 'Significance Level',
-                          'Data Transformation'] + lod_params,
+                          'Data Transformation'] + lod_params + hydro_params,
             'Value': [
                 len(self.data),
                 ', '.join(self.data[self.group_col].unique().astype(str)),
                 len(self.ba_cols),
                 f"α = {self.alpha}",
                 'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)'
-            ] + lod_values
+            ] + lod_values + hydro_values
         }
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Overview', startrow=current_row, index=False)
@@ -1516,6 +1585,33 @@ class ExcelReportGenerator:
         if results_rows:
             results_df = pd.DataFrame(results_rows)
             results_df.to_excel(writer, sheet_name='Overview', startrow=current_row, index=False)
+            current_row += len(results_df) + 3
+
+        if self.results.hydrophobicity_results:
+            hydro_header = pd.DataFrame({'': [f'HYDROPHOBICITY INDEX SUMMARY (pH {self.hydro_ph} — {self.hydro_tissue.capitalize()})']})
+            hydro_header.to_excel(writer, sheet_name='Overview', startrow=current_row,
+                                 index=False, header=False)
+            current_row += 1
+            hydro_rows = []
+            for metric, result in self.results.hydrophobicity_results.items():
+                sig_comparisons = []
+                if result.posthoc_test and result.posthoc_test.pairwise_results is not None:
+                    sig_pairs = result.posthoc_test.pairwise_results[
+                        result.posthoc_test.pairwise_results['significant'] == True
+                    ]
+                    for _, row in sig_pairs.iterrows():
+                        sig_comparisons.append(f"{row['group1']} vs {row['group2']}")
+                hydro_rows.append({
+                    'Metric': metric,
+                    'Test': result.main_test.test_type.value,
+                    'P-value': f"{result.main_test.pvalue:.6f}",
+                    'Significant': 'Yes' if result.main_test.significant else 'No',
+                    'Effect Size': f"{result.main_test.effect_size:.3f}" if result.main_test.effect_size else 'N/A',
+                    'Significant Comparisons': '; '.join(sig_comparisons) if sig_comparisons else 'None'
+                })
+            if hydro_rows:
+                hydro_df = pd.DataFrame(hydro_rows)
+                hydro_df.to_excel(writer, sheet_name='Overview', startrow=current_row, index=False)
 
     def _write_twoway_overview_sheet(self, writer: pd.ExcelWriter):
         """Write overview sheet for two-way ANOVA report."""
@@ -1555,6 +1651,8 @@ class ExcelReportGenerator:
             f'{len(_excl_ba_tw)} of {len(self.ba_cols)} ({len(_excl_ba_tw)/len(self.ba_cols)*100:.1f}%)' if self.ba_cols else '0',
             f'{len(_excl_cat_tw)}' if _excl_cat_tw else 'None'
         ] if self.lod_threshold > 0 else []
+        hydro_params_tw = ['Hydrophobicity pH', 'Hydrophobicity Tissue'] if self.hydrophobicity is not None else []
+        hydro_values_tw = [f'{self.hydro_ph}', self.hydro_tissue.capitalize()] if self.hydrophobicity is not None else []
         summary_data = {
             'Parameter': [
                 'Total Samples', 'Experimental Design',
@@ -1562,14 +1660,14 @@ class ExcelReportGenerator:
                 'Cell Sizes', 'Bile Acids Measured',
                 'Significance Level', 'Non-parametric Method',
                 'Data Transformation'
-            ] + lod_params_tw,
+            ] + lod_params_tw + hydro_params_tw,
             'Value': [
                 len(valid_data), f'{fa_name} x {fb_name} factorial',
                 ', '.join(fa_levels), ', '.join(fb_levels),
                 '; '.join(cell_sizes), len(self.ba_cols),
                 f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)',
                 'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)'
-            ] + lod_values_tw
+            ] + lod_values_tw + hydro_values_tw
         }
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
@@ -1628,6 +1726,16 @@ class ExcelReportGenerator:
 
         if self.results.twoway_percentages:
             summary = get_twoway_differences_summary(self.results.twoway_percentages)
+            summary.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+            current_row += len(summary) + 3
+
+        # SUMMARY TABLE: Hydrophobicity
+        if self.results.twoway_hydrophobicity:
+            section_header = pd.DataFrame({'': [f'HYDROPHOBICITY INDEX RESULTS SUMMARY (pH {self.hydro_ph} — {self.hydro_tissue.capitalize()})']})
+            section_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                                   index=False, header=False)
+            current_row += 1
+            summary = get_twoway_differences_summary(self.results.twoway_hydrophobicity)
             summary.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
             current_row += len(summary) + 3
 
@@ -1807,19 +1915,21 @@ class ExcelReportGenerator:
             f'{len(_excl_ba_3w)} of {len(self.ba_cols)} ({len(_excl_ba_3w)/len(self.ba_cols)*100:.1f}%)' if self.ba_cols else '0',
             f'{len(_excl_cat_3w)}' if _excl_cat_3w else 'None'
         ] if self.lod_threshold > 0 else []
+        hydro_params_3w = ['Hydrophobicity pH', 'Hydrophobicity Tissue'] if self.hydrophobicity is not None else []
+        hydro_values_3w = [f'{self.hydro_ph}', self.hydro_tissue.capitalize()] if self.hydrophobicity is not None else []
         summary_data = {
             'Parameter': [
                 'Total Samples', 'Experimental Design',
                 f'Factor A: {fa_name}', f'Factor B: {fb_name}', f'Factor C: {fc_name}',
                 'Bile Acids Measured', 'Significance Level', 'Non-parametric Method',
                 'Data Transformation'
-            ] + lod_params_3w,
+            ] + lod_params_3w + hydro_params_3w,
             'Value': [
                 len(valid_data), f'{fa_name} x {fb_name} x {fc_name} factorial',
                 ', '.join(fa_levels), ', '.join(fb_levels), ', '.join(fc_levels),
                 len(self.ba_cols), f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)',
                 'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)'
-            ] + lod_values_3w
+            ] + lod_values_3w + hydro_values_3w
         }
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
@@ -1842,6 +1952,7 @@ class ExcelReportGenerator:
             ('TOTAL CATEGORIES RESULTS SUMMARY', self.results.threeway_totals),
             ('RATIOS RESULTS SUMMARY', self.results.threeway_ratios),
             ('PERCENTAGE COMPOSITION RESULTS SUMMARY', self.results.threeway_percentages),
+            (f'HYDROPHOBICITY INDEX RESULTS SUMMARY (pH {self.hydro_ph} — {self.hydro_tissue.capitalize()})', self.results.threeway_hydrophobicity),
         ]:
             section_header = pd.DataFrame({'': [section_title]})
             section_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
