@@ -1,0 +1,24 @@
+{
+  "title": "Bile Acid Analysis Pipeline",
+  "description": "A comprehensive, user-friendly pipeline for analyzing LC-MS bile acid data with automatic data structure detection, assumption-aware statistical testing, and publication-quality visualizations. Recognizes 44 bile acid species and computes group totals, percentages, and clinical ratios.",
+  "upload_type": "software",
+  "access_right": "open",
+  "license": "MIT",
+  "version": "3.0.1",
+  "creators": [
+    {
+      "name": "Way, Grayson W.",
+      "affiliation": "Virginia Commonwealth University",
+      "orcid": "0000-0002-5765-2064"
+    }
+  ],
+  "keywords": [
+    "bile acids",
+    "LC-MS",
+    "metabolomics",
+    "statistical analysis",
+    "data visualization",
+    "Streamlit",
+    "Python"
+  ]
+}

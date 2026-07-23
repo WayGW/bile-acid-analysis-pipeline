@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+title: Bile Acid Analysis Pipeline
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Grayson
+    name-particle: W.
+    family-names: Way
+    email: waygw@vcu.edu
+    orcid: 'https://orcid.org/0000-0002-5765-2064'
+repository-code: 'https://github.com/WayGW/bile-acid-analysis-pipeline'
+url: 'https://bile-acid-pipeline.streamlit.app/'
+abstract: >-
+  A comprehensive, user-friendly pipeline for analyzing
+  LC-MS bile acid data with automatic data structure
+  detection, assumption-aware statistical testing, and
+  publication-quality visualizations. Recognizes 44 bile
+  acid species and computes group totals, percentages, and
+  clinical ratios.
+keywords:
+  - bile acids
+  - LC-MS
+  - metabolomics
+  - statistical analysis
+  - data visualization
+  - Streamlit
+  - Python
+license: MIT
+version: 3.0.1
+date-released: '2026-07-23'
