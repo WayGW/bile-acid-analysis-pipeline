@@ -1161,7 +1161,7 @@ class BileAcidVisualizer:
         
         # Set up positions
         y_pos = np.arange(len(top_bas))
-        bar_height = 0.95 / n_groups
+        bar_height = 1 / n_groups
         
         # Get colors for groups
         group_colors = dict(zip(groups, self.group_palette[:n_groups]))
@@ -1172,7 +1172,7 @@ class BileAcidVisualizer:
             errs = [group_sems.loc[group, ba] for ba in top_bas]
             offset = (i - n_groups/2 + 0.5) * bar_height
 
-            bars = ax.barh(y_pos + offset, values, bar_height * 0.95,
+            bars = ax.barh(y_pos + offset, values, bar_height,
                           xerr=errs, capsize=3,
                           error_kw=dict(ecolor='black', elinewidth=1, capthick=1),
                           label=group, color=group_colors[group],

@@ -1413,6 +1413,7 @@ def render_percentages_tab(processed, settings):
     st.markdown("---")
     st.markdown("#### Pool Composition - Bar Comparison")
     st.caption("Side-by-side comparison of bile acid percentages across groups")
+    st.caption("Mean displayed with SEM error bars")
     
     fig_hbar = viz.plot_composition_horizontal_bars(
         pie_df, comp_group_col, pct_cols,
@@ -1428,7 +1429,7 @@ def render_percentages_tab(processed, settings):
     # =========================================================================
     st.markdown("---")
     st.markdown("#### Stacked Composition View")
-    st.caption("Full bile acid pool breakdown for each group")
+    st.caption("Full bile acid pool breakdown for each group. Mean Percentage with +- SEM displayed.")
     
     fig_stacked = viz.plot_composition_stacked_horizontal(
         pie_df, comp_group_col, pct_cols,
