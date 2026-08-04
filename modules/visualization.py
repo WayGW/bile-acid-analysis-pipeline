@@ -1140,10 +1140,15 @@ class BileAcidVisualizer:
         
         # Calculate mean percentages for each group
         group_means = data.groupby(group_col)[pct_cols].mean()
-        
+
         # Clean column names (remove _pct suffix)
         group_means.columns = [col.replace('_pct', '') for col in group_means.columns]
-        
+
+        # Calculate SEM for error bars
+        group_sems = data.groupby(group_col)[pct_cols].sem()
+        group_sems.columns = [col.replace('_pct', '') for col in group_sems.columns]
+        group_sems = group_sems.fillna(0)  # guard against n=1 groups
+
         # Get top N bile acids by overall mean
         overall_means = group_means.mean().sort_values(ascending=False)
         top_bas = overall_means.head(top_n).index.tolist()
@@ -1164,17 +1169,20 @@ class BileAcidVisualizer:
         # Plot bars for each group
         for i, group in enumerate(groups):
             values = [group_means.loc[group, ba] for ba in top_bas]
+            errs = [group_sems.loc[group, ba] for ba in top_bas]
             offset = (i - n_groups/2 + 0.5) * bar_height
-            
+
             bars = ax.barh(y_pos + offset, values, bar_height * 0.9,
+                          xerr=errs, capsize=3,
+                          error_kw=dict(ecolor='black', elinewidth=1, capthick=1),
                           label=group, color=group_colors[group],
                           edgecolor='white', linewidth=0.5)
-            
+
             # Add value labels
             if show_values:
-                for bar, val in zip(bars, values):
+                for bar, val, err in zip(bars, values, errs):
                     if val >= 1:  # Only show if >= 1%
-                        ax.text(bar.get_width() + 0.3, bar.get_y() + bar.get_height()/2,
+                        ax.text(bar.get_width() + err + 0.3, bar.get_y() + bar.get_height()/2,
                                f'{val:.1f}%', va='center', ha='left', fontsize=8)
         
         # Formatting
@@ -1229,18 +1237,25 @@ class BileAcidVisualizer:
         # Calculate mean percentages for each group
         group_means = data.groupby(group_col)[pct_cols].mean()
         group_means.columns = [col.replace('_pct', '') for col in group_means.columns]
-        
+
         # Get top N bile acids by overall mean
         overall_means = group_means.mean().sort_values(ascending=False)
         top_bas = overall_means.head(top_n).index.tolist()
-        
-        # Create "Other" category
+
+        # Create "Other" category (per-row sum, so SEM reflects the true
+        # compositional sum rather than the sum of individual SEMs)
+        data_clean = data[[group_col] + pct_cols].copy()
+        data_clean.columns = [group_col] + [col.replace('_pct', '') for col in pct_cols]
         other_bas = [ba for ba in group_means.columns if ba not in top_bas]
         if other_bas:
+            data_clean['Other'] = data_clean[other_bas].sum(axis=1)
             group_means['Other'] = group_means[other_bas].sum(axis=1)
             plot_bas = top_bas + ['Other']
         else:
             plot_bas = top_bas
+
+        # Calculate SEM for each group/bile acid, matching the means above
+        group_sems = data_clean.groupby(group_col)[plot_bas].sem().fillna(0)
         
         # Calculate figure size
         if figsize is None:
@@ -1257,16 +1272,17 @@ class BileAcidVisualizer:
         
         for i, ba in enumerate(plot_bas):
             values = group_means.loc[groups, ba].values
+            sems = group_sems.loc[groups, ba].values
             bars = ax.barh(y_pos, values, left=left, label=ba, color=colors[i],
                           edgecolor='white', linewidth=0.5, height=0.6)
-            
+
             # Add labels for segments >= 5%
-            for j, (bar, val) in enumerate(zip(bars, values)):
+            for j, (bar, val, sem) in enumerate(zip(bars, values, sems)):
                 if val >= 5:
                     ax.text(left[j] + val/2, bar.get_y() + bar.get_height()/2,
-                           f'{val:.0f}%', va='center', ha='center', 
+                           f'{val:.0f}% ± {sem:.1f}%', va='center', ha='center',
                            fontsize=8, fontweight='bold', color='white')
-            
+
             left += values
         
         # Formatting
