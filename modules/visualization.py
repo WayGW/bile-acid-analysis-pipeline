@@ -1289,6 +1289,7 @@ class BileAcidVisualizer:
         # Formatting
         ax.set_yticks(y_pos)
         ax.set_yticklabels(groups)
+        ax.invert_yaxis()  # First group (matches bar-comparison legend order) at top
         ax.set_xlabel('% of Total Bile Acid Pool')
         ax.set_xlim(0, 100)
         
