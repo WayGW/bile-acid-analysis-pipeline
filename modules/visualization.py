@@ -1153,26 +1153,27 @@ class BileAcidVisualizer:
         overall_means = group_means.mean().sort_values(ascending=False)
         top_bas = overall_means.head(top_n).index.tolist()
         
-        # Calculate figure size
+        # Calculate figure size - scale height with both bile acid count and
+        # group count so bars stay thick (in absolute inches) as n_groups grows
         if figsize is None:
-            figsize = (12, max(6, len(top_bas) * 0.4))
-        
+            figsize = (12, max(6, len(top_bas) * n_groups * 0.2))
+
         fig, ax = plt.subplots(figsize=figsize)
-        
+
         # Set up positions
         y_pos = np.arange(len(top_bas))
-        bar_height = 1 / n_groups
-        
+        bar_height = 0.85 / n_groups  # envelope < 1 leaves a gap between bile acid rows
+
         # Get colors for groups
         group_colors = dict(zip(groups, self.group_palette[:n_groups]))
-        
+
         # Plot bars for each group
         for i, group in enumerate(groups):
             values = [group_means.loc[group, ba] for ba in top_bas]
             errs = [group_sems.loc[group, ba] for ba in top_bas]
             offset = (i - n_groups/2 + 0.5) * bar_height
 
-            bars = ax.barh(y_pos + offset, values, bar_height,
+            bars = ax.barh(y_pos + offset, values, bar_height * 0.95,
                           xerr=errs, capsize=3,
                           error_kw=dict(ecolor='black', elinewidth=1, capthick=1),
                           label=group, color=group_colors[group],
