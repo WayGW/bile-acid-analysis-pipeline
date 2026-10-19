@@ -980,7 +980,8 @@ class ExcelReportGenerator:
 
         # Get raw data for these bile acids
         id_cols = [self.group_col]
-        if self.sample_id_col and self.sample_id_col in self.data.columns:
+        if (self.sample_id_col and self.sample_id_col in self.data.columns
+                and self.sample_id_col != self.group_col):
             id_cols = [self.sample_id_col] + id_cols
 
         # For two-way designs, include all factor columns

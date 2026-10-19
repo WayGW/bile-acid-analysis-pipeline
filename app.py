@@ -133,6 +133,7 @@ def _ensure_report_generator(processed, settings):
     report_gen = ExcelReportGenerator(
         data=processed.sample_data,
         group_col=group_col,
+        sample_id_col=getattr(processed.structure, 'sample_id_col', None),  # S16: keep Sample_ID in report sheets
         bile_acid_cols=processed.structure.bile_acid_cols,
         totals=processed.totals,
         ratios=processed.ratios,
