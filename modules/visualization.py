@@ -133,7 +133,8 @@ class BileAcidVisualizer:
             
         elif plot_type == "box":
             sns.boxplot(data=data, x=group_col, y=plot_col, ax=ax,
-                       hue=group_col, palette=palette, order=groups, legend=False)
+                       hue=group_col, palette=palette, order=groups, legend=False,
+                       showfliers=not show_points)
             if show_points:
                 sns.stripplot(data=data, x=group_col, y=plot_col, ax=ax,
                             color='black', alpha=0.5, size=4, order=groups)
@@ -353,7 +354,8 @@ class BileAcidVisualizer:
                     
         elif plot_type == "box":
             sns.boxplot(data=data, x=group_col, y=plot_col, ax=ax,
-                       hue=group_col, palette=colors, order=groups, legend=False)
+                       hue=group_col, palette=colors, order=groups, legend=False,
+                       showfliers=not show_points)
             if show_points:
                 sns.stripplot(data=data, x=group_col, y=plot_col, ax=ax,
                              hue=group_col, palette=colors, order=groups,
@@ -553,7 +555,8 @@ class BileAcidVisualizer:
 
             if plot_type == "box":
                 sns.boxplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
-                          hue=group_col, palette=palette, order=valid_groups, legend=False)
+                          hue=group_col, palette=palette, order=valid_groups, legend=False,
+                          showfliers=not show_points)
                 if show_points:
                     sns.stripplot(data=plot_data, x=group_col, y=plot_col, ax=ax,
                                 color='black', alpha=0.7, size=6, order=valid_groups,
@@ -619,31 +622,13 @@ class BileAcidVisualizer:
         return fig
 
     def _get_significant_pairs(self, result, max_pairs: int = 3) -> List[Tuple[str, str, str]]:
-        """Extract significant pairs from statistical result."""
-        if not result.posthoc_test or result.posthoc_test.pairwise_results is None:
-            return []
+        """Extract significant pairs from statistical result.
         
-        pairs = []
-        posthoc_df = result.posthoc_test.pairwise_results
-        sig_rows = posthoc_df[posthoc_df['significant']].copy()
-        
-        # Sort by p-value to get most significant first
-        p_col = 'pvalue_adj' if 'pvalue_adj' in sig_rows.columns else 'pvalue'
-        sig_rows = sig_rows.sort_values(p_col)
-        
-        for _, row in sig_rows.head(max_pairs).iterrows():
-            p = row.get('pvalue_adj', row.get('pvalue', 1.0))
-            if p < 0.001:
-                annot = '***'
-            elif p < 0.01:
-                annot = '**'
-            elif p < 0.05:
-                annot = '*'
-            else:
-                continue
-            pairs.append((row['group1'], row['group2'], annot))
-        
-        return pairs
+        Post-hoc table when present; for two-group comparisons the main test is
+        used (S5). Most significant first, at most ``max_pairs``.
+        """
+        from modules.statistical_tests import significant_pairs
+        return significant_pairs(result, max_pairs=max_pairs, sort=True)
     
     def plot_grouped_comparison_with_stats(
         self,
@@ -1370,7 +1355,8 @@ class BileAcidVisualizer:
 
         if plot_type == "box":
             sns.boxplot(data=df, x=factor_a_col, y=plot_col, hue=factor_b_col,
-                       ax=ax, palette=palette_dict, order=a_levels, hue_order=b_levels)
+                       ax=ax, palette=palette_dict, order=a_levels, hue_order=b_levels,
+                       showfliers=not show_points)
             if show_points:
                 sns.stripplot(data=df, x=factor_a_col, y=plot_col, hue=factor_b_col,
                              ax=ax, dodge=True, palette='dark:black', alpha=0.6, size=4,
@@ -2114,7 +2100,8 @@ class BileAcidVisualizer:
             if plot_type == "box":
                 palette_dict = dict(zip(b_levels, palette))
                 sns.boxplot(data=subset, x=factor_a_col, y=value_col, hue=factor_b_col,
-                           ax=ax, palette=palette_dict, order=a_levels, hue_order=b_levels)
+                           ax=ax, palette=palette_dict, order=a_levels, hue_order=b_levels,
+                           showfliers=not show_points)
                 if show_points:
                     sns.stripplot(data=subset, x=factor_a_col, y=value_col, hue=factor_b_col,
                                  ax=ax, dodge=True, palette='dark:black', alpha=0.6, size=3,

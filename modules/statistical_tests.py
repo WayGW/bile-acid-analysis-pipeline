@@ -80,6 +80,8 @@ class AssumptionResults:
     group_sizes: Dict[str, int] = field(default_factory=dict)
     min_group_size: int = 0
     total_n: int = 0
+    # Groups (n >= 2) whose values are all identical, e.g. fully LOD-replaced (S15)
+    constant_groups: List[str] = field(default_factory=list)
     
     # Recommended test
     recommended_test: TestType = None
@@ -346,6 +348,15 @@ class StatisticalAnalyzer:
         results.min_group_size = min(results.group_sizes.values()) if results.group_sizes else 0
         results.total_n = sum(results.group_sizes.values())
         
+        # S15: groups with zero within-group variance (e.g. every value LOD-replaced).
+        # Welch weights n/s^2 and ANOVA assumptions are undefined for these; the
+        # multi-group recommendation routes them to Kruskal-Wallis.
+        for g, d in group_data.items():
+            vals = np.asarray(d, dtype=float)
+            vals = vals[~np.isnan(vals)]
+            if len(vals) >= 2 and (np.ptp(vals) == 0 or np.std(vals) < 1e-10):
+                results.constant_groups.append(g)
+        
         # Test normality for each group
         for group_name, values in group_data.items():
             stat, p, passed = self.check_normality(values, group_name)
@@ -393,6 +404,15 @@ class StatisticalAnalyzer:
                 f"Normality violated in: {', '.join(failed_groups)}"
             )
         
+        # PRIORITY 1b (S15): a group with zero variance (e.g. all LOD-replaced);
+        # a t-test would effectively compare the other group's mean with a constant.
+        if assumptions.constant_groups:
+            return (
+                TestType.MANN_WHITNEY,
+                "Zero variance in: " + ", ".join(map(str, assumptions.constant_groups))
+                + " (e.g. all values LOD-replaced); using non-parametric"
+            )
+        
         # PRIORITY 2: Very small samples (normality passed but sample too small for robust parametric)
         if assumptions.min_group_size < self.MIN_PARAMETRIC_N:
             return (
@@ -424,6 +444,15 @@ class StatisticalAnalyzer:
             return (
                 TestType.KRUSKAL_WALLIS,
                 f"Normality violated in: {', '.join(failed_groups)}"
+            )
+        
+        # PRIORITY 1b (S15): a group with zero variance (e.g. all LOD-replaced)
+        # makes Welch's ANOVA undefined and violates ANOVA assumptions.
+        if assumptions.constant_groups:
+            return (
+                TestType.KRUSKAL_WALLIS,
+                "Zero variance in: " + ", ".join(map(str, assumptions.constant_groups))
+                + " (e.g. all values LOD-replaced); using non-parametric"
             )
         
         # PRIORITY 2: Very small samples (normality passed but sample too small for robust parametric)
@@ -462,7 +491,49 @@ class StatisticalAnalyzer:
         group_data = [data[data[group_col] == g][value_col].dropna().values 
                       for g in groups]
         
-        if test_type in [TestType.TTEST_INDEPENDENT, TestType.TTEST_WELCH, TestType.MANN_WHITNEY]:
+        if test_type == TestType.MANN_WHITNEY:
+            # S7: rank-biserial correlation, r = 2*U1/(n1*n2) - 1, where U1 is the
+            # Mann-Whitney U of the first group (positive when group 1 tends higher).
+            # Validated against R effectsize::rank_biserial and pingouin.mwu.
+            g1, g2 = group_data[0], group_data[1]
+            n1, n2 = len(g1), len(g2)
+            if n1 == 0 or n2 == 0:
+                return None, "rank_biserial", "undefined"
+            u1 = stats.mannwhitneyu(g1, g2, alternative='two-sided').statistic
+            r_rb = 2.0 * u1 / (n1 * n2) - 1.0
+            abs_r = abs(r_rb)
+            # Cohen (1988) benchmarks for r
+            if abs_r < 0.1:
+                interp = "negligible"
+            elif abs_r < 0.3:
+                interp = "small"
+            elif abs_r < 0.5:
+                interp = "medium"
+            else:
+                interp = "large"
+            return r_rb, "rank_biserial", interp
+        
+        if test_type == TestType.KRUSKAL_WALLIS:
+            # S7: rank epsilon-squared, E2_R = H / ((n^2 - 1) / (n + 1))
+            # (Tomczak & Tomczak 2014). Validated against R
+            # effectsize::rank_epsilon_squared. Benchmarks: Field (2013).
+            n = int(sum(len(g) for g in group_data))
+            if n < 2:
+                return None, "epsilon_squared", "undefined"
+            H = stats.kruskal(*group_data).statistic
+            eps_sq = float(H * (n + 1) / (n ** 2 - 1))
+            eps_sq = min(max(eps_sq, 0.0), 1.0)
+            if eps_sq < 0.01:
+                interp = "negligible"
+            elif eps_sq < 0.06:
+                interp = "small"
+            elif eps_sq < 0.14:
+                interp = "medium"
+            else:
+                interp = "large"
+            return eps_sq, "epsilon_squared", interp
+        
+        if test_type in [TestType.TTEST_INDEPENDENT, TestType.TTEST_WELCH]:
             # Cohen's d for two groups
             g1, g2 = group_data[0], group_data[1]
             
@@ -489,8 +560,8 @@ class StatisticalAnalyzer:
             
             return d, "cohens_d", interp
         
-        elif test_type in [TestType.ANOVA_ONEWAY, TestType.ANOVA_WELCH, TestType.KRUSKAL_WALLIS]:
-            # Eta-squared for multi-group
+        elif test_type in [TestType.ANOVA_ONEWAY, TestType.ANOVA_WELCH]:
+            # Eta-squared for multi-group (parametric tests)
             all_data = np.concatenate(group_data)
             grand_mean = np.mean(all_data)
             
@@ -607,11 +678,17 @@ class StatisticalAnalyzer:
         # F statistic numerator
         f_num = np.sum(w * (means - grand_mean)**2) / (k - 1)
         
-        # Lambda term for denominator
+        # Welch (1951): A = sum((1 - w_i/W)^2 / (n_i - 1))
+        #   F    = [sum(w_i (m_i - m_w)^2) / (k-1)] / [1 + 2(k-2)/(k^2-1) * A]
+        #   df2  = (k^2 - 1) / (3A)
+        # lambda_term below is 3A/(k^2-1) = 1/df2, so the denominator is
+        # 1 + 2(k-2)/3 * lambda_term. (S1: the previous code multiplied by
+        # 2(k-2)/(k^2-1) a second time, inflating F for k > 2.)
+        # Validated against statsmodels.stats.oneway.anova_oneway(use_var="unequal").
         lambda_term = 3 * np.sum((1 - w/np.sum(w))**2 / (ns - 1)) / (k**2 - 1)
         
         # F statistic denominator
-        f_denom = 1 + 2 * (k - 2) / (k**2 - 1) * lambda_term
+        f_denom = 1 + 2 * (k - 2) / 3 * lambda_term
         
         F = f_num / f_denom
         
@@ -619,8 +696,8 @@ class StatisticalAnalyzer:
         df1 = k - 1
         df2 = 1 / lambda_term
         
-        # P-value
-        p = 1 - stats.f.cdf(F, df1, df2)
+        # P-value (survival function avoids 1 - cdf cancellation for tiny p)
+        p = stats.f.sf(F, df1, df2)
         
         return F, p
     
@@ -638,7 +715,18 @@ class StatisticalAnalyzer:
         if len(groups) <= 2:
             return None
         
-        # Select post-hoc test based on assumptions
+        # S3: the post-hoc follows the main test chosen by check_assumptions,
+        # so a non-parametric omnibus (e.g. Kruskal-Wallis for min n < 5 or a
+        # zero-variance group) is never followed by a parametric post-hoc.
+        rec = assumptions.recommended_test
+        if rec == TestType.KRUSKAL_WALLIS:
+            return self._dunn_test(data, value_col, group_col)
+        if rec == TestType.ANOVA_ONEWAY:
+            return self._tukey_hsd(data, value_col, group_col)
+        if rec == TestType.ANOVA_WELCH:
+            return self._games_howell(data, value_col, group_col)
+        
+        # Fallback (no multi-group recommendation recorded): assumption-based rule
         if assumptions.overall_normality and assumptions.homoscedasticity_passed:
             return self._tukey_hsd(data, value_col, group_col)
         elif assumptions.overall_normality:
@@ -689,13 +777,23 @@ class StatisticalAnalyzer:
         value_col: str,
         group_col: str
     ) -> StatisticalResult:
-        """Games-Howell test for unequal variances."""
+        """Games-Howell test for unequal variances.
+        
+        For each pair: t = (m1 - m2) / sqrt(v1/n1 + v2/n2) with Welch-Satterthwaite
+        df, and p = P(Q > |t| * sqrt(2)) from the studentized range distribution
+        with k groups (S2). The studentized range already controls the
+        family-wise error rate, so no further adjustment is applied.
+        Columns: 'pvalue' = unadjusted Welch t p (for reference),
+        'pvalue_adj' = Games-Howell p (used for 'significant' and annotations).
+        Validated against pingouin.pairwise_gameshowell.
+        """
         groups = data[group_col].unique()
         group_data = {g: data[data[group_col] == g][value_col].dropna().values 
                       for g in groups}
         
         pairwise = []
         group_list = list(groups)
+        k = len(group_list)
         
         for i in range(len(group_list)):
             for j in range(i + 1, len(group_list)):
@@ -708,13 +806,19 @@ class StatisticalAnalyzer:
                 
                 se = np.sqrt(v1/n1 + v2/n2)
                 mean_diff = m1 - m2
-                t_stat = mean_diff / se if se > 0 else 0
                 
-                # Welch-Satterthwaite degrees of freedom
-                df = (v1/n1 + v2/n2)**2 / ((v1/n1)**2/(n1-1) + (v2/n2)**2/(n2-1))
-                
-                # p-value (two-tailed)
-                p = 2 * (1 - stats.t.cdf(abs(t_stat), df))
+                if se > 0:
+                    t_stat = mean_diff / se
+                    # Welch-Satterthwaite degrees of freedom
+                    df = (v1/n1 + v2/n2)**2 / ((v1/n1)**2/(n1-1) + (v2/n2)**2/(n2-1))
+                    # Unadjusted two-tailed Welch t p (reference only)
+                    p_raw = 2 * stats.t.sf(abs(t_stat), df)
+                    # Games-Howell p from the studentized range distribution
+                    p_gh = float(stats.studentized_range.sf(abs(t_stat) * np.sqrt(2), k, df))
+                    p_gh = min(max(p_gh, 0.0), 1.0)
+                else:
+                    # Both groups constant: comparison undefined
+                    t_stat, df, p_raw, p_gh = np.nan, np.nan, np.nan, np.nan
                 
                 pairwise.append({
                     'group1': g1,
@@ -722,14 +826,12 @@ class StatisticalAnalyzer:
                     'mean_diff': mean_diff,
                     't_stat': t_stat,
                     'df': df,
-                    'pvalue': p,
-                    'significant': p < self.alpha
+                    'pvalue': p_raw,
+                    'pvalue_adj': p_gh,
+                    'significant': bool(p_gh < self.alpha) if np.isfinite(p_gh) else False
                 })
         
-        # Apply correction
         pairwise_df = pd.DataFrame(pairwise)
-        pairwise_df['pvalue_adj'] = self._adjust_pvalues(pairwise_df['pvalue'].values)
-        pairwise_df['significant'] = pairwise_df['pvalue_adj'] < self.alpha
         
         return StatisticalResult(
             test_type=TestType.GAMES_HOWELL,
@@ -746,15 +848,31 @@ class StatisticalAnalyzer:
         value_col: str,
         group_col: str
     ) -> StatisticalResult:
-        """Dunn's test for non-parametric post-hoc comparisons."""
+        """Dunn's test for non-parametric post-hoc comparisons.
+        
+        z = (Rbar_i - Rbar_j) / sqrt((N(N+1)/12 - T) * (1/n_i + 1/n_j)), with the
+        tie correction T = sum(t^3 - t) / (12 (N - 1)) (Dunn 1964). Rows with a
+        missing value are excluded before ranking (S7). Unadjusted p in 'pvalue',
+        BH-adjusted within the table in 'pvalue_adj'.
+        Validated against R dunn.test (altp = TRUE).
+        """
+        # Drop missing values first so ranks, N and group sizes agree (S7)
+        data = data[[group_col, value_col]].copy()
+        data[value_col] = pd.to_numeric(data[value_col], errors='coerce')
+        data = data.dropna(subset=[group_col, value_col])
         groups = data[group_col].unique()
         
-        # Rank all data
-        data = data.copy()
+        # Rank all data (average ranks for ties)
         data['_rank'] = data[value_col].rank()
         
         n_total = len(data)
         group_data = {g: data[data[group_col] == g] for g in groups}
+        
+        # Tie correction term
+        _, tie_counts = np.unique(data[value_col].values, return_counts=True)
+        tie_term = (np.sum(tie_counts ** 3 - tie_counts) / (12.0 * (n_total - 1))
+                    if n_total > 1 else 0.0)
+        base_var = n_total * (n_total + 1) / 12.0 - tie_term
         
         pairwise = []
         group_list = list(groups)
@@ -770,11 +888,11 @@ class StatisticalAnalyzer:
                 mean_rank2 = group_data[g2]['_rank'].mean()
                 
                 # Z statistic
-                se = np.sqrt((n_total * (n_total + 1) / 12) * (1/n1 + 1/n2))
+                se = np.sqrt(max(base_var, 0.0) * (1/n1 + 1/n2))
                 z = (mean_rank1 - mean_rank2) / se if se > 0 else 0
                 
                 # Two-tailed p-value
-                p = 2 * (1 - stats.norm.cdf(abs(z)))
+                p = 2 * stats.norm.sf(abs(z))
                 
                 pairwise.append({
                     'group1': g1,
@@ -2351,6 +2469,67 @@ class StatisticalAnalyzer:
             })
 
         return pd.DataFrame(rows).round(4)
+
+
+def _p_annotation(p) -> str:
+    """Star annotation for a p-value ('' if not < 0.05 or not finite)."""
+    try:
+        p = float(p)
+    except (TypeError, ValueError):
+        return ''
+    if not np.isfinite(p):
+        return ''
+    if p < 0.001:
+        return '***'
+    if p < 0.01:
+        return '**'
+    if p < 0.05:
+        return '*'
+    return ''
+
+
+def significant_pairs(
+    result: Optional[FullAnalysisResult],
+    max_pairs: Optional[int] = None,
+    sort: bool = True,
+) -> List[Tuple[str, str, str]]:
+    """
+    Significant pairwise comparisons of a one-way result as (group1, group2, stars).
+    
+    Uses the post-hoc table when present (p = 'pvalue_adj' if available, else
+    'pvalue'). For two-group comparisons there is no post-hoc, so the main test
+    itself is the pairwise comparison (S5): if it is significant, the single pair
+    is returned with the main-test p. Shared by the tab/ZIP figures and the
+    report figures so brackets come from the same cached statistics.
+    """
+    if result is None:
+        return []
+    
+    posthoc = getattr(result, 'posthoc_test', None)
+    if posthoc is not None and posthoc.pairwise_results is not None:
+        df = posthoc.pairwise_results
+        if len(df) == 0 or 'significant' not in df:
+            return []
+        sig = df[df['significant'] == True]
+        p_col = 'pvalue_adj' if 'pvalue_adj' in sig.columns else 'pvalue'
+        if sort:
+            sig = sig.sort_values(p_col)
+        pairs = []
+        for _, row in sig.iterrows():
+            annot = _p_annotation(row.get(p_col, 1.0))
+            if annot:
+                pairs.append((row['group1'], row['group2'], annot))
+            if max_pairs is not None and len(pairs) >= max_pairs:
+                break
+        return pairs
+    
+    main = getattr(result, 'main_test', None)
+    if main is not None and len(main.groups_compared or []) == 2 and bool(main.significant):
+        annot = _p_annotation(main.pvalue)
+        if annot:
+            g1, g2 = main.groups_compared
+            return [(g1, g2, annot)][:max_pairs] if max_pairs is not None else [(g1, g2, annot)]
+    return []
 
 
 def format_analysis_report(result: FullAnalysisResult) -> str:

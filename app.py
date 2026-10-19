@@ -187,18 +187,9 @@ def compute_all_statistics(processed, settings):
 
 
 def get_sig_pairs(result, max_pairs=5):
-    """Extract significant pairs from result."""
-    if not result or not result.posthoc_test or result.posthoc_test.pairwise_results is None:
-        return []
-    pairs = []
-    df = result.posthoc_test.pairwise_results
-    sig = df[df['significant']].sort_values('pvalue_adj' if 'pvalue_adj' in df else 'pvalue')
-    for _, row in sig.head(max_pairs).iterrows():
-        p = row.get('pvalue_adj', row.get('pvalue', 1.0))
-        annot = '***' if p < 0.001 else ('**' if p < 0.01 else '*' if p < 0.05 else '')
-        if annot:
-            pairs.append((row['group1'], row['group2'], annot))
-    return pairs
+    """Extract significant pairs from result (post-hoc, or main test when k = 2; S5)."""
+    from modules.statistical_tests import significant_pairs
+    return significant_pairs(result, max_pairs=max_pairs, sort=True)
 
 
 def generate_all_export_figures(processed, results, settings):
