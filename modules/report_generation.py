@@ -414,6 +414,9 @@ class ExcelReportGenerator:
         self.lod_threshold = lod_threshold
         self.lod_excluded: Dict[str, float] = {}  # {analyte: lod_pct} for excluded analytes
         self.units = units
+        # Figure display order {column: [levels]}, set by the app before export.
+        # Display only: recorded in the Overview sheet, never used by statistics.
+        self.display_orders: Optional[Dict[str, List]] = None
 
         # Identify bile acid columns
         if bile_acid_cols:
@@ -1507,7 +1510,20 @@ class ExcelReportGenerator:
                         f'HYDROPHOBICITY INDEX COMPARISONS (pH {self.hydro_ph})',
                         self.results.hydrophobicity_results
                     )
+            self._write_display_order_block(writer)
         return filepath
+
+    def _write_display_order_block(self, writer: pd.ExcelWriter):
+        """Append the figure group order (display only) below the Overview content."""
+        orders = {k: list(v) for k, v in (self.display_orders or {}).items() if v}
+        if not orders or 'Overview' not in writer.sheets:
+            return
+        start = writer.sheets['Overview'].max_row + 1   # 0-based startrow -> one blank row
+        pd.DataFrame({'': ['FIGURE GROUP ORDER (display only; statistics unaffected)']}).to_excel(
+            writer, sheet_name='Overview', startrow=start, index=False, header=False)
+        rows = [{'Column': col, 'Order in figures (left to right)': ' | '.join(str(v) for v in levels)}
+                for col, levels in orders.items()]
+        pd.DataFrame(rows).to_excel(writer, sheet_name='Overview', startrow=start + 1, index=False)
     
     def _write_overview_sheet(self, writer: pd.ExcelWriter):
         """Write overview/summary sheet."""
@@ -1638,8 +1654,10 @@ class ExcelReportGenerator:
         valid_data = self.data[self.data[self.group_col].notna()].copy()
         valid_data = valid_data[valid_data[self.group_col].astype(str).str.lower() != 'nan']
 
-        fa_levels = sorted(valid_data[fa_col].unique().astype(str))
-        fb_levels = sorted(valid_data[fb_col].unique().astype(str))
+        from modules.group_order import apply_order
+        _orders = self.display_orders or {}
+        fa_levels = apply_order(sorted(valid_data[fa_col].unique().astype(str)), _orders.get(fa_col))
+        fb_levels = apply_order(sorted(valid_data[fb_col].unique().astype(str)), _orders.get(fb_col))
 
         # Cell sizes
         cell_sizes = []
@@ -1908,9 +1926,11 @@ class ExcelReportGenerator:
         valid_data = self.data[self.data[self.group_col].notna()].copy()
         valid_data = valid_data[valid_data[self.group_col].astype(str).str.lower() != 'nan']
 
-        fa_levels = sorted(valid_data[fa_col].unique().astype(str))
-        fb_levels = sorted(valid_data[fb_col].unique().astype(str))
-        fc_levels = sorted(valid_data[fc_col].unique().astype(str))
+        from modules.group_order import apply_order
+        _orders = self.display_orders or {}
+        fa_levels = apply_order(sorted(valid_data[fa_col].unique().astype(str)), _orders.get(fa_col))
+        fb_levels = apply_order(sorted(valid_data[fb_col].unique().astype(str)), _orders.get(fb_col))
+        fc_levels = apply_order(sorted(valid_data[fc_col].unique().astype(str)), _orders.get(fc_col))
 
         _excl_ba_3w = {k: v for k, v in self.lod_excluded.items() if k in self.ba_cols}
         _excl_cat_3w = {k: v for k, v in self.lod_excluded.items() if k not in self.ba_cols}

@@ -29,6 +29,7 @@ from config.bile_acid_species import (
 from modules.data_processing import BileAcidDataProcessor, ProcessedData, validate_data_quality
 from modules.statistical_tests import StatisticalAnalyzer, format_analysis_report, format_twoway_apa, format_threeway_apa
 from modules.visualization import BileAcidVisualizer
+from modules.group_order import apply_order, default_levels, order_table, positions_to_order, combined_order
 from modules.hydrophobicity import HydrophobicityCalculator
 from modules.report_generation import (
     ExcelReportGenerator, SignificancePlotter,
@@ -72,6 +73,7 @@ def init_session_state():
         'selected_sheet': None,  # User-selected data sheet
         'hydrophobicity': None,  # HI_pool and hydrophobic_load DataFrame
         'hydro_tissue': 'blood',  # Current tissue for HI calculation
+        'level_orders': {},  # User display order {column: [levels]} (figures only)
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -104,6 +106,119 @@ def check_settings_changed(settings):
         st.session_state.last_settings = current
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Group order for figures (display only; never affects statistics)
+# ---------------------------------------------------------------------------
+
+def make_visualizer(settings):
+    """BileAcidVisualizer with the sidebar style and the user's group order."""
+    return BileAcidVisualizer(color_palette=settings['color_palette'],
+                              style=settings['plot_style'],
+                              level_orders=settings.get('level_orders'))
+
+
+def get_order_columns(processed):
+    """Columns whose display order can be set: {column: (label, default mode)}.
+
+    Factors (two-/three-way designs) default to alphabetical, as in the factorial
+    plots; a plain group column defaults to order of first appearance.
+    """
+    s = processed.structure
+    data = processed.sample_data
+    cols = {}
+    n_factors = getattr(s, 'n_factors', 0) or 0
+    if n_factors >= 2:
+        for name, col in list((getattr(s, 'factors', {}) or {}).items())[:n_factors]:
+            if col in data.columns:
+                cols[col] = (name, 'sorted')
+    gc = s.group_col
+    if gc and gc in data.columns and gc not in cols and gc != '_group_':
+        cols[gc] = (gc, 'appearance')
+    return cols
+
+
+def build_level_orders(processed, stored):
+    """User orders plus derived orders for combined factor labels ('A - B[ - C]')."""
+    orders = {k: list(v) for k, v in (stored or {}).items() if v}
+    s = processed.structure
+    data = processed.sample_data
+    factor_cols = [c for c in (getattr(s, 'factors', {}) or {}).values() if c in data.columns]
+    if orders and len(factor_cols) >= 2 and any(c in orders for c in factor_cols):
+        def levels(c):
+            return apply_order(default_levels(data[c], 'sorted'), orders.get(c))
+        n = min(getattr(s, 'n_factors', 0) or 0, 3)
+        if n >= 2:   # labels built in the tabs from factors A, B[, C]
+            orders['_factorial_group_'] = combined_order([levels(c) for c in factor_cols[:n]])
+        if s.group_col == '_group_':   # synthetic group built from all factors
+            orders['_group_'] = combined_order([levels(c) for c in factor_cols])
+    return orders
+
+
+def report_display_orders(settings):
+    """User-set orders to record in the report Overview (derived labels omitted)."""
+    orders = {k: v for k, v in (settings.get('level_orders') or {}).items()
+              if v and not str(k).startswith('_')}
+    return orders or None
+
+
+def order_pivot_columns(pivot_df, settings, col):
+    """Reorder a summary pivot's group columns by the display order (unchanged if none)."""
+    order = (settings.get('level_orders') or {}).get(col)
+    if not order:
+        return pivot_df
+    return pivot_df[apply_order(list(pivot_df.columns), order)]
+
+
+def render_group_order_controls(processed):
+    """Expander with one Group/Position table per group column or factor."""
+    cols = get_order_columns(processed)
+    if not cols:
+        return
+    stored = st.session_state.level_orders
+    with st.expander("\U0001F500 Group order for figures", expanded=False):
+        st.caption("Position 1 is furthest left. Applies to every figure, the ZIP package and the "
+                   "report figures. Statistics are not recomputed or changed.")
+        with st.form("group_order_form", border=False):
+            tables = {}
+            for (col, (label, mode)), ui in zip(cols.items(), st.columns(len(cols))):
+                levels = apply_order(default_levels(processed.sample_data[col], mode), stored.get(col))
+                with ui:
+                    st.markdown(f"**{label}**")
+                    tables[col] = st.data_editor(
+                        order_table(levels), key=f"group_order_editor_{col}",
+                        hide_index=True, disabled=["Group"], width="stretch",
+                        column_config={"Position": st.column_config.NumberColumn(
+                            "Position", min_value=1, step=1, required=True)})
+            b1, b2 = st.columns(2)
+            apply_clicked = b1.form_submit_button("Apply order", type="primary")
+            reset_clicked = b2.form_submit_button("Reset to default")
+    if not (apply_clicked or reset_clicked):
+        return
+    if reset_clicked:
+        new_orders = {}
+    else:
+        new_orders, errors = {}, []
+        for col, table in tables.items():
+            order, err = positions_to_order(table)
+            if err:
+                errors.append(f"{cols[col][0]}: {err}")
+            else:
+                new_orders[col] = order
+        if errors:
+            st.warning("Group order not applied. " + " ".join(errors))
+            return
+    for col in cols:
+        st.session_state.pop(f"group_order_editor_{col}", None)
+    if new_orders != stored:
+        st.session_state.level_orders = new_orders
+        # Display-only change: drop rendered figures, keep all statistics
+        st.session_state.figures = {}
+        st.session_state.pop('heatmap_fig', None)
+        st.session_state.zip_data = None
+        st.session_state.zip_figure_count = 0
+    st.rerun()
 
 
 def fig_to_bytes(fig, format='png', dpi=300):
@@ -198,7 +313,7 @@ def generate_all_export_figures(processed, results, settings):
     from config.bile_acid_species import get_primary, get_secondary, get_glycine_conjugated, get_taurine_conjugated
     
     figures = {}
-    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    viz = make_visualizer(settings)
     group_col = processed.structure.group_col
     
     if not group_col or not results:
@@ -552,6 +667,7 @@ def create_results_zip(processed, results, figures, report_gen, settings=None):
         # Excel report
         if report_gen:
             excel_buf = BytesIO()
+            report_gen.display_orders = report_display_orders(settings or {})
             report_gen.save_excel_report(excel_buf)
             excel_buf.seek(0)
             zf.writestr('reports/statistical_report.xlsx', excel_buf.getvalue())
@@ -766,7 +882,7 @@ def render_concentrations_tab(processed, settings):
     """Render concentrations tab."""
     st.markdown("### Individual Bile Acid Concentrations")
 
-    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    viz = make_visualizer(settings)
     group_col = processed.structure.group_col
     results = st.session_state.analysis_results
 
@@ -995,7 +1111,7 @@ def render_totals_tab(processed, settings):
     """Render totals tab."""
     st.markdown("### Aggregate Totals")
 
-    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    viz = make_visualizer(settings)
     group_col = processed.structure.group_col
     results = st.session_state.analysis_results
 
@@ -1164,7 +1280,7 @@ def render_percentages_tab(processed, settings):
     st.markdown("### Bile Acid Pool Composition (%)")
     st.caption("Compare the percentage each bile acid contributes to the total pool across groups")
     
-    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    viz = make_visualizer(settings)
     group_col = processed.structure.group_col
     results = st.session_state.analysis_results
     
@@ -1491,6 +1607,7 @@ def render_percentages_tab(processed, settings):
             if summary_data:
                 pivot_df = pd.DataFrame(summary_data).pivot_table(
                     index='Bile Acid', columns='Group', values='Mean %', aggfunc='first')
+                pivot_df = order_pivot_columns(pivot_df, settings, comp_group_col_summary if (is_threeway or is_twoway) else group_col)
                 st.dataframe(pivot_df, width="stretch")
         elif is_twoway:
             comp_group_col_summary = '_factorial_group_'
@@ -1512,6 +1629,7 @@ def render_percentages_tab(processed, settings):
             if summary_data:
                 pivot_df = pd.DataFrame(summary_data).pivot_table(
                     index='Bile Acid', columns='Group', values='Mean %', aggfunc='first')
+                pivot_df = order_pivot_columns(pivot_df, settings, comp_group_col_summary if (is_threeway or is_twoway) else group_col)
                 st.dataframe(pivot_df, width="stretch")
         else:
             summary_data = []
@@ -1529,6 +1647,7 @@ def render_percentages_tab(processed, settings):
             if summary_data:
                 pivot_df = pd.DataFrame(summary_data).pivot_table(
                     index='Bile Acid', columns='Group', values='Mean %', aggfunc='first')
+                pivot_df = order_pivot_columns(pivot_df, settings, comp_group_col_summary if (is_threeway or is_twoway) else group_col)
                 st.dataframe(pivot_df, width="stretch")
 
     # Raw data view
@@ -1549,7 +1668,7 @@ def render_ratios_tab(processed, settings):
     """Render ratios tab with multi-panel display."""
     st.markdown("### Ratios")
 
-    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    viz = make_visualizer(settings)
     group_col = processed.structure.group_col
     results = st.session_state.analysis_results
     is_threeway = results is not None and getattr(results, 'is_threeway', False)
@@ -1800,6 +1919,7 @@ def render_ratios_tab(processed, settings):
             if summary_data:
                 summary_df = pd.DataFrame(summary_data)
                 pivot_df = summary_df.pivot_table(index='Ratio', columns='Group', values='Mean', aggfunc='first')
+                pivot_df = order_pivot_columns(pivot_df, settings, group_col)
                 st.dataframe(pivot_df, width="stretch")
 
     # Raw data
@@ -1817,7 +1937,7 @@ def render_hydrophobicity_tab(processed, settings):
     """Render hydrophobicity index tab with group comparisons."""
     st.markdown("### Hydrophobicity Index")
 
-    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    viz = make_visualizer(settings)
     group_col = processed.structure.group_col
     results = st.session_state.analysis_results
     hydro_df = st.session_state.hydrophobicity
@@ -1953,6 +2073,7 @@ def render_hydrophobicity_tab(processed, settings):
         if summary_data:
             summary_df = pd.DataFrame(summary_data)
             pivot_df = summary_df.pivot_table(index='Metric', columns='Group', values='Mean', aggfunc='first')
+            pivot_df = order_pivot_columns(pivot_df, settings, gcol)
             st.dataframe(pivot_df, width="stretch")
 
     with st.expander(f"Effective HI Reference Table (pH {tissue_ph} — {tissue_label})"):
@@ -2219,6 +2340,7 @@ def render_export_tab(processed, settings):
         st.markdown("#### Complete Reports")
         if report_gen:
             buf = BytesIO()
+            report_gen.display_orders = report_display_orders(settings)
             report_gen.save_excel_report(buf)
             buf.seek(0)
             st.download_button("📥 Statistical Report (Excel)", buf.getvalue(),
@@ -2253,7 +2375,7 @@ def render_heatmap_tab(processed, settings):
     st.markdown("### Faceted Heatmap")
     st.caption("Visualize bile acid expression patterns across samples, grouped by category")
 
-    viz = BileAcidVisualizer(color_palette=settings['color_palette'], style=settings['plot_style'])
+    viz = make_visualizer(settings)
     group_col = processed.structure.group_col
 
     if not group_col:
@@ -2364,6 +2486,7 @@ def main():
             st.session_state.zip_figure_count = 0
             st.session_state.last_file = uploaded.name
             st.session_state.last_settings = None  # Reset settings tracking for new file
+            st.session_state.level_orders = {}  # Levels differ between files
             st.session_state.selected_sheet = None  # Reset sheet selection for new file
 
         # Write temp file for sheet inspection and processing
@@ -2402,6 +2525,7 @@ def main():
         sheet_changed = (st.session_state.selected_sheet != selected_sheet)
         if sheet_changed:
             st.session_state.selected_sheet = selected_sheet
+            st.session_state.level_orders = {}  # Levels differ between sheets
             st.session_state.stats_computed = False
             st.session_state.stats_sections_done = set()
             st.session_state.report_generator = None
@@ -2475,6 +2599,10 @@ def main():
                 processed.structure.factor_source, "unknown")
             st.info(f"🔬 **Two-way design detected** ({source_label}): **{factor_names[0]}** × **{factor_names[1]}**")
         
+        # User-defined group order for figures (display only)
+        render_group_order_controls(processed)
+        settings['level_orders'] = build_level_orders(processed, st.session_state.level_orders)
+
         # Show per-analyte LOD details
         if quality.get('analyte_lods'):
             with st.expander("🔬 Per-Analyte LOD Details"):
