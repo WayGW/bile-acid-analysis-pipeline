@@ -56,8 +56,16 @@ class BileAcidVisualizer:
         figsize_wide: Tuple[float, float] = (12, 6),
         figsize_tall: Tuple[float, float] = (8, 10),
         color_palette: str = "Set2",
-        style: str = "whitegrid"
+        style: str = "whitegrid",
+        level_orders: Optional[Dict[str, List]] = None
     ):
+        """
+        level_orders: optional display order per column, {column: [level, ...]}
+            (position 1 = furthest left). Applies to group columns, factor
+            columns and combined factor labels. Display only; None keeps the
+            default (first appearance for groups, alphabetical for factors).
+        """
+        self.level_orders = dict(level_orders or {})
         self.figsize_single = figsize_single
         self.figsize_wide = figsize_wide
         self.figsize_tall = figsize_tall
@@ -65,6 +73,11 @@ class BileAcidVisualizer:
         self.group_palette = get_group_palette(color_palette, 10)
         sns.set_style(style)
         sns.set_palette(color_palette)
+
+    def _order_levels(self, levels, col) -> List:
+        """Apply the user's display order for ``col`` to ``levels`` (default order kept if none)."""
+        from modules.group_order import apply_order
+        return apply_order(levels, self.level_orders.get(col))
     
     def plot_group_comparison(
         self,
@@ -96,7 +109,7 @@ class BileAcidVisualizer:
             fig = ax.figure
         
         # Get valid groups only
-        groups = [g for g in data[group_col].unique() if pd.notna(g)]
+        groups = self._order_levels([g for g in data[group_col].unique() if pd.notna(g)], group_col)
         palette = colors if colors else dict(zip(groups, self.group_palette[:len(groups)]))
         
         # Prepare plot data - apply log10 transform if requested
@@ -222,6 +235,7 @@ class BileAcidVisualizer:
             return fig, ax
         
         group_means = data.groupby(group_col)[available_cols].mean()
+        group_means = group_means.loc[self._order_levels(list(group_means.index), group_col)]
         
         if as_percentage:
             row_sums = group_means.sum(axis=1)
@@ -321,7 +335,7 @@ class BileAcidVisualizer:
         data = data[data[group_col].notna()]
         data = data[data[group_col].astype(str).str.strip().str.lower() != 'nan']
         
-        groups = [g for g in data[group_col].unique() if pd.notna(g)]
+        groups = self._order_levels([g for g in data[group_col].unique() if pd.notna(g)], group_col)
         colors = dict(zip(groups, self.group_palette[:len(groups)]))
         
         # Prepare plot data - apply log10 transform if requested
@@ -428,7 +442,7 @@ class BileAcidVisualizer:
         axes = axes.flatten() if n_plots > 1 else [axes]
 
         # Get valid groups only (no NaN)
-        groups = [g for g in data[group_col].unique() if pd.notna(g)]
+        groups = self._order_levels([g for g in data[group_col].unique() if pd.notna(g)], group_col)
         palette = dict(zip(groups, self.group_palette[:len(groups)]))
         
         for i, col in enumerate(value_cols):
@@ -527,7 +541,7 @@ class BileAcidVisualizer:
         axes = axes.flatten() if n_plots > 1 else [axes]
         
         # Get valid groups only
-        groups = [g for g in data[group_col].unique() if pd.notna(g)]
+        groups = self._order_levels([g for g in data[group_col].unique() if pd.notna(g)], group_col)
         palette = dict(zip(groups, self.group_palette[:len(groups)]))
         
         for i, col in enumerate(value_cols):
@@ -683,7 +697,7 @@ class BileAcidVisualizer:
                 data[col] = np.log10(data[col].clip(lower=floor_val))
             plot_ylabel = f'log10({ylabel})'
         
-        groups = data[group_col].unique().tolist()
+        groups = self._order_levels(data[group_col].unique().tolist(), group_col)
         n_groups = len(groups)
         n_types = len(value_cols)
         
@@ -829,7 +843,7 @@ class BileAcidVisualizer:
         data = data[data[group_col].notna()]
         data = data[data[group_col].astype(str).str.lower() != 'nan']
         
-        groups = data[group_col].unique().tolist()
+        groups = self._order_levels(data[group_col].unique().tolist(), group_col)
         n_groups = len(groups)
         
         # Calculate figure size
@@ -976,7 +990,7 @@ class BileAcidVisualizer:
         data = data[data[group_col].notna()]
         data = data[data[group_col].astype(str).str.lower() != 'nan']
 
-        groups = data[group_col].unique().tolist()
+        groups = self._order_levels(data[group_col].unique().tolist(), group_col)
         n_groups = len(groups)
         n_categories = len(categories)
 
@@ -1120,7 +1134,7 @@ class BileAcidVisualizer:
         data = data[data[group_col].notna()]
         data = data[data[group_col].astype(str).str.lower() != 'nan']
         
-        groups = data[group_col].unique().tolist()
+        groups = self._order_levels(data[group_col].unique().tolist(), group_col)
         n_groups = len(groups)
         
         # Calculate mean percentages for each group
@@ -1217,7 +1231,7 @@ class BileAcidVisualizer:
         data = data[data[group_col].notna()]
         data = data[data[group_col].astype(str).str.lower() != 'nan']
         
-        groups = data[group_col].unique().tolist()
+        groups = self._order_levels(data[group_col].unique().tolist(), group_col)
         n_groups = len(groups)
         
         # Calculate mean percentages for each group
@@ -1342,8 +1356,8 @@ class BileAcidVisualizer:
             plot_ylabel = f'log10({ylabel})'
 
         # Get ordered levels
-        a_levels = sorted(df[factor_a_col].unique())
-        b_levels = sorted(df[factor_b_col].unique())
+        a_levels = self._order_levels(sorted(df[factor_a_col].unique()), factor_a_col)
+        b_levels = self._order_levels(sorted(df[factor_b_col].unique()), factor_b_col)
         n_a = len(a_levels)
         n_b = len(b_levels)
 
@@ -1598,8 +1612,8 @@ class BileAcidVisualizer:
         df[value_col] = pd.to_numeric(df[value_col], errors='coerce')
         df = df.dropna()
 
-        a_levels = sorted(df[factor_a_col].unique())
-        b_levels = sorted(df[factor_b_col].unique())
+        a_levels = self._order_levels(sorted(df[factor_a_col].unique()), factor_a_col)
+        b_levels = self._order_levels(sorted(df[factor_b_col].unique()), factor_b_col)
         palette = self.group_palette[:len(b_levels)]
         markers = ['o', 's', '^', 'D', 'v', '<', '>', 'p']
 
@@ -1791,7 +1805,14 @@ class BileAcidVisualizer:
                     sort_cols.append(col_name)
         if not sort_cols:
             sort_cols = [group_col]
-        data = data.sort_values(sort_cols, key=lambda x: x.astype(str))
+        # Rows follow the display order of each sort column (default: alphabetical)
+        _rank_maps = {}
+        for _c in sort_cols:
+            _lv = self._order_levels(sorted(data[_c].astype(str).str.strip().unique()), _c)
+            _rank_maps[_c] = {lv: r for r, lv in enumerate(_lv)}
+        data = data.sort_values(
+            sort_cols, kind="stable",
+            key=lambda x: x.astype(str).str.strip().map(_rank_maps[x.name]))
         sorted_idx = data.index  # original indices in sorted order
         data = data.reset_index(drop=True)
         totals = totals.loc[sorted_idx].reset_index(drop=True)
@@ -1816,7 +1837,7 @@ class BileAcidVisualizer:
             for f_idx, (display_name, col_name) in enumerate(factor_cols.items()):
                 if col_name in data.columns:
                     clean_name = display_name.replace('Factor_', '') if display_name.startswith('Factor_') else display_name
-                    levels = sorted(data[col_name].astype(str).unique())
+                    levels = self._order_levels(sorted(data[col_name].astype(str).unique()), col_name)
                     level_map = {level: i for i, level in enumerate(levels)}
                     meta_df[clean_name] = data[col_name].astype(str).map(level_map)
                     meta_labels[clean_name] = {i: level for level, i in level_map.items()}
@@ -2075,7 +2096,7 @@ class BileAcidVisualizer:
         df[value_col] = pd.to_numeric(df[value_col], errors='coerce')
         df = df.dropna()
 
-        c_levels = sorted(df[factor_c_col].unique())
+        c_levels = self._order_levels(sorted(df[factor_c_col].unique()), factor_c_col)
         n_c = len(c_levels)
 
         has_anova = threeway_result is not None
@@ -2084,8 +2105,8 @@ class BileAcidVisualizer:
         if n_c == 1:
             axes = [axes]
 
-        a_levels = sorted(df[factor_a_col].unique())
-        b_levels = sorted(df[factor_b_col].unique())
+        a_levels = self._order_levels(sorted(df[factor_a_col].unique()), factor_a_col)
+        b_levels = self._order_levels(sorted(df[factor_b_col].unique()), factor_b_col)
         n_a = len(a_levels)
         n_b = len(b_levels)
 
@@ -2213,9 +2234,9 @@ class BileAcidVisualizer:
         df[value_col] = pd.to_numeric(df[value_col], errors='coerce')
         df = df.dropna()
 
-        c_levels = sorted(df[factor_c_col].unique())
-        a_levels = sorted(df[factor_a_col].unique())
-        b_levels = sorted(df[factor_b_col].unique())
+        c_levels = self._order_levels(sorted(df[factor_c_col].unique()), factor_c_col)
+        a_levels = self._order_levels(sorted(df[factor_a_col].unique()), factor_a_col)
+        b_levels = self._order_levels(sorted(df[factor_b_col].unique()), factor_b_col)
         n_c = len(c_levels)
 
         fig, axes = plt.subplots(1, n_c, figsize=(max(5, 4 * n_c), 4), sharey=True)
@@ -2305,7 +2326,7 @@ class BileAcidVisualizer:
             return f'{p:.3f}'
 
         df = data.copy()
-        c_levels = sorted(df[factor_c_col].astype(str).str.strip().unique())
+        c_levels = self._order_levels(sorted(df[factor_c_col].astype(str).str.strip().unique()), factor_c_col)
         n_c = len(c_levels)
         n_analytes = len(value_cols)
 
@@ -2328,8 +2349,8 @@ class BileAcidVisualizer:
             for c_idx in range(1, n_c):
                 axes[row_idx, c_idx].sharey(axes[row_idx, 0])
 
-        a_levels = sorted(df[factor_a_col].astype(str).str.strip().unique())
-        b_levels = sorted(df[factor_b_col].astype(str).str.strip().unique())
+        a_levels = self._order_levels(sorted(df[factor_a_col].astype(str).str.strip().unique()), factor_a_col)
+        b_levels = self._order_levels(sorted(df[factor_b_col].astype(str).str.strip().unique()), factor_b_col)
         n_a = len(a_levels)
         n_b = len(b_levels)
         bar_width = 0.8 / n_b
@@ -2477,9 +2498,9 @@ class BileAcidVisualizer:
         fc_name = factor_c_name or factor_c_col
 
         df = data.copy()
-        c_levels = sorted(df[factor_c_col].astype(str).str.strip().unique())
-        a_levels = sorted(df[factor_a_col].astype(str).str.strip().unique())
-        b_levels = sorted(df[factor_b_col].astype(str).str.strip().unique())
+        c_levels = self._order_levels(sorted(df[factor_c_col].astype(str).str.strip().unique()), factor_c_col)
+        a_levels = self._order_levels(sorted(df[factor_a_col].astype(str).str.strip().unique()), factor_a_col)
+        b_levels = self._order_levels(sorted(df[factor_b_col].astype(str).str.strip().unique()), factor_b_col)
         n_c = len(c_levels)
 
         palette = self.group_palette[:len(b_levels)]
