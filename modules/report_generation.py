@@ -135,6 +135,10 @@ def format_apa_statistics(result: FullAnalysisResult) -> str:
             effect_str = f"η² = {test.effect_size:.2f}"
         elif test.effect_size_type == 'cohens_d':
             effect_str = f"d = {test.effect_size:.2f}"
+        elif test.effect_size_type == 'rank_biserial':
+            effect_str = f"r_rb = {test.effect_size:.2f}"
+        elif test.effect_size_type == 'epsilon_squared':
+            effect_str = f"ε² = {test.effect_size:.2f}"
         else:
             effect_str = f"{test.effect_size_type} = {test.effect_size:.2f}"
         return f"{stat_str}, {p_str}, {effect_str}"
@@ -976,7 +980,8 @@ class ExcelReportGenerator:
 
         # Get raw data for these bile acids
         id_cols = [self.group_col]
-        if self.sample_id_col and self.sample_id_col in self.data.columns:
+        if (self.sample_id_col and self.sample_id_col in self.data.columns
+                and self.sample_id_col != self.group_col):
             id_cols = [self.sample_id_col] + id_cols
 
         # For two-way designs, include all factor columns
@@ -2204,29 +2209,10 @@ class ExcelReportGenerator:
         if not sheet.statistical_result:
             return []
         
-        result = sheet.statistical_result
-        if not result.posthoc_test or result.posthoc_test.pairwise_results is None:
-            return []
-        
-        pairs = []
-        posthoc = result.posthoc_test.pairwise_results
-        
-        for _, row in posthoc.iterrows():
-            if row['significant']:
-                # Determine p-value annotation
-                p = row.get('pvalue_adj', row.get('pvalue', 1.0))
-                if p < 0.001:
-                    annotation = '***'
-                elif p < 0.01:
-                    annotation = '**'
-                elif p < 0.05:
-                    annotation = '*'
-                else:
-                    continue
-                
-                pairs.append((row['group1'], row['group2'], annotation))
-        
-        return pairs
+        # Post-hoc table when present; two-group comparisons use the main test (S5).
+        # Table order, no limit (unchanged behaviour for k > 2).
+        from modules.statistical_tests import significant_pairs
+        return significant_pairs(sheet.statistical_result, max_pairs=None, sort=False)
 
 
 class SignificancePlotter:
@@ -2311,7 +2297,8 @@ class SignificancePlotter:
         
         if plot_type == "box":
             sns.boxplot(data=data, x=group_col, y=value_col, ax=ax,
-                       hue=group_col, palette=colors, order=group_order, legend=False)
+                       hue=group_col, palette=colors, order=group_order, legend=False,
+                       showfliers=not show_points)
             if show_points:
                 sns.stripplot(data=data, x=group_col, y=value_col, ax=ax,
                             color='black', alpha=0.5, size=5, order=group_order)
@@ -2417,7 +2404,8 @@ class SignificancePlotter:
             # Plot
             if plot_type == "box":
                 sns.boxplot(data=plot_data, x=group_col, y='Total', ax=ax,
-                           hue=group_col, palette=colors, order=group_order, legend=False)
+                           hue=group_col, palette=colors, order=group_order, legend=False,
+                           showfliers=False)  # every point is overlaid below
                 sns.stripplot(data=plot_data, x=group_col, y='Total', ax=ax,
                             color='black', alpha=0.5, size=4, order=group_order)
             elif plot_type == "violin":
