@@ -5,6 +5,7 @@ Bile Acid Analysis Pipeline - Streamlit Application
 Run with: streamlit run app.py
 """
 
+import copy
 import gc
 import streamlit as st
 import pandas as pd
@@ -62,22 +63,77 @@ def init_session_state():
     defaults = {
         'processed_data': None,
         'analysis_results': ComprehensiveAnalysisResults(),
-        'figures': {},
         'report_generator': None,
         'stats_computed': False,
         'stats_sections_done': set(),  # Track which stat sections are computed
-        'last_file': None,
         'last_settings': None,  # Track settings that affect data/stats
-        'zip_data': None,  # Cached ZIP bytes for download
+        'zip_path': None,  # On-disk ZIP package (not held in memory)
         'zip_figure_count': 0,  # Number of figures in cached ZIP
         'selected_sheet': None,  # User-selected data sheet
         'hydrophobicity': None,  # HI_pool and hydrophobic_load DataFrame
         'hydro_tissue': 'blood',  # Current tissue for HI calculation
         'level_orders': {},  # User display order {column: [levels]} (figures only)
+        'figure_specs': {},  # Lightweight recipes for figures viewed in tabs
+        'uploaded_file_id': None,  # Detect same-name file replacements
+        'uploaded_tmp_path': None,  # Stable temp file for the current upload
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
+
+
+def _remove_file(path):
+    """Delete a temporary file, ignoring missing files and filesystem errors."""
+    if not path:
+        return
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def clear_zip_package():
+    """Remove the on-disk results ZIP and forget its path."""
+    _remove_file(st.session_state.get('zip_path'))
+    st.session_state.zip_path = None
+    st.session_state.zip_figure_count = 0
+
+
+def clear_export_artifacts():
+    """Drop the on-disk ZIP package after a data/display change."""
+    clear_zip_package()
+
+
+def clear_figure_specs(predicate=None):
+    """Forget viewed-figure recipes, all of them or only matching names."""
+    specs = st.session_state.get('figure_specs') or {}
+    if predicate is None:
+        st.session_state.figure_specs = {}
+    else:
+        st.session_state.figure_specs = {
+            name: spec for name, spec in specs.items() if not predicate(name)
+        }
+    clear_zip_package()
+
+
+def reset_analysis_state(clear_upload=False):
+    """Release per-analysis objects while keeping sidebar settings intact."""
+    clear_export_artifacts()
+    st.session_state.processed_data = None
+    st.session_state.analysis_results = ComprehensiveAnalysisResults()
+    st.session_state.report_generator = None
+    st.session_state.stats_computed = False
+    st.session_state.stats_sections_done = set()
+    st.session_state.hydrophobicity = None
+    st.session_state.selected_sheet = None
+    st.session_state.level_orders = {}
+    st.session_state.figure_specs = {}
+    st.session_state.last_settings = None
+    st.session_state.pop('heatmap_fig', None)
+    if clear_upload:
+        _remove_file(st.session_state.get('uploaded_tmp_path'))
+        st.session_state.uploaded_tmp_path = None
+        st.session_state.uploaded_file_id = None
 
 
 def get_data_affecting_settings(settings):
@@ -99,10 +155,12 @@ def check_settings_changed(settings):
         # Settings changed - need to reprocess data and recompute stats
         st.session_state.stats_computed = False
         st.session_state.stats_sections_done = set()
+        st.session_state.analysis_results = ComprehensiveAnalysisResults()
         st.session_state.report_generator = None
-        st.session_state.figures = {}
-        st.session_state.zip_data = None
-        st.session_state.zip_figure_count = 0
+        st.session_state.hydrophobicity = None
+        st.session_state.figure_specs = {}
+        st.session_state.pop('heatmap_fig', None)
+        clear_export_artifacts()
         st.session_state.last_settings = current
         return True
     return False
@@ -213,11 +271,9 @@ def render_group_order_controls(processed):
         st.session_state.pop(f"group_order_editor_{col}", None)
     if new_orders != stored:
         st.session_state.level_orders = new_orders
-        # Display-only change: drop rendered figures, keep all statistics
-        st.session_state.figures = {}
+        # Display-only change: drop saved figure recipes, keep all statistics.
         st.session_state.pop('heatmap_fig', None)
-        st.session_state.zip_data = None
-        st.session_state.zip_figure_count = 0
+        clear_figure_specs()
     st.rerun()
 
 
@@ -227,13 +283,6 @@ def fig_to_bytes(fig, format='png', dpi=300):
     fig.savefig(buf, format=format, dpi=dpi, bbox_inches='tight')
     buf.seek(0)
     return buf.getvalue()
-
-
-def store_figure(fig, name):
-    """Store a figure as PDF bytes in session state (not the raw object)."""
-    if 'figures' not in st.session_state:
-        st.session_state.figures = {}
-    st.session_state.figures[name] = fig_to_bytes(fig, 'pdf')
 
 
 def _ensure_report_generator(processed, settings):
@@ -308,16 +357,572 @@ def get_sig_pairs(result, max_pairs=5):
     return significant_pairs(result, max_pairs=max_pairs, sort=True)
 
 
-def generate_all_export_figures(processed, results, settings):
-    """Generate all figure variations for export package."""
+# ---------------------------------------------------------------------------
+# Viewed-figure recipes
+# ---------------------------------------------------------------------------
+# The old implementation stored every viewed figure as PDF bytes.  That made
+# the export exact but kept tens of megabytes alive for the whole session.  A
+# recipe stores only the small choices that produced the figure (columns,
+# log scale, style snapshot, factor names, etc.); the figure is rebuilt one at
+# a time when the ZIP is requested.
+
+def register_figure_spec(name, kind, settings, params):
+    """Remember how a figure was viewed, without retaining its pixels."""
+    spec = {
+        'kind': kind,
+        'settings': copy.deepcopy(settings),
+        'params': copy.deepcopy(params),
+    }
+    specs = st.session_state.setdefault('figure_specs', {})
+    if specs.get(name) == spec:
+        return
+    specs[name] = spec
+    # An already-generated ZIP no longer matches what the user has viewed.
+    clear_zip_package()
+
+
+def register_scale_pair(base_name, kind, settings, params):
+    """Register both linear and log forms of a multi-panel figure."""
+    viewed_log = bool(params.get('log_scale', False))
+    for log_scale in (viewed_log, not viewed_log):
+        p = dict(params)
+        p['log_scale'] = log_scale
+        register_figure_spec(
+            f"{base_name}{'_log' if log_scale else ''}", kind, settings, p
+        )
+
+
+def _result_source_name(results, section, log=False):
+    """Attribute name holding the result dict for a section and design."""
+    is_threeway = bool(getattr(results, 'is_threeway', False))
+    is_twoway = bool(getattr(results, 'is_twoway', False))
+    if section == 'individual_ba':
+        base = ('threeway_individual_ba' if is_threeway
+                else 'twoway_individual_ba' if is_twoway
+                else 'individual_ba_results')
+    elif section == 'totals':
+        base = ('threeway_totals' if is_threeway
+                else 'twoway_totals' if is_twoway
+                else 'totals_results')
+    elif section == 'ratios':
+        base = ('threeway_ratios' if is_threeway
+                else 'twoway_ratios' if is_twoway
+                else 'ratios_results')
+    elif section == 'percentages':
+        base = ('threeway_percentages' if is_threeway
+                else 'twoway_percentages' if is_twoway
+                else 'percentages_results')
+    elif section == 'hydrophobicity':
+        base = ('threeway_hydrophobicity' if is_threeway
+                else 'twoway_hydrophobicity' if is_twoway
+                else 'hydrophobicity_results')
+    elif section == 'categories':
+        base = 'category_results'
+    else:
+        return ''
+    if log and section in ('individual_ba', 'totals', 'ratios'):
+        return f'log_{base}'
+    return base
+
+
+def _filtered_sample_data(processed):
+    """Sample rows used by every plot tab (drop missing/NaN groups)."""
+    group_col = processed.structure.group_col
+    if not group_col or group_col not in processed.sample_data.columns:
+        return processed.sample_data.iloc[0:0].copy()
+    data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
+    return data[data[group_col].astype(str).str.lower() != 'nan']
+
+
+def _spec_meta_columns(params, data, processed):
+    factor_cols = [c for c in (params.get('factor_cols') or []) if c in data.columns]
+    if factor_cols:
+        return factor_cols
+    group_col = params.get('group_col') or processed.structure.group_col
+    return [group_col] if group_col in data.columns else []
+
+
+def _prepare_spec_data(processed, params):
+    """Rebuild the DataFrame used by a saved multi-panel/interaction recipe."""
+    data = _filtered_sample_data(processed)
+    source = params.get('data_source', 'sample')
+    value_cols = list(params.get('value_cols') or [])
+    source_cols = list(params.get('source_cols') or value_cols)
+
+    if source == 'sample':
+        return data, params.get('group_col') or processed.structure.group_col
+
+    if source == 'totals':
+        source_df = processed.totals
+    elif source == 'ratios':
+        source_df = processed.ratios
+    elif source == 'percentages':
+        source_df = processed.percentages
+    elif source == 'hydro':
+        source_df = st.session_state.get('hydrophobicity')
+    else:
+        raise ValueError(f"Unknown figure data source: {source}")
+
+    if source_df is None:
+        raise ValueError(f"No data available for {source}")
+    missing = [c for c in source_cols if c not in source_df.columns]
+    if missing:
+        raise ValueError(f"Missing columns for saved figure: {missing}")
+
+    values = source_df.loc[data.index, source_cols].reset_index(drop=True)
+    values.columns = value_cols
+    meta_cols = _spec_meta_columns(params, data, processed)
+    if meta_cols:
+        meta = data[meta_cols].reset_index(drop=True)
+        return pd.concat([meta, values], axis=1), params.get('group_col') or processed.structure.group_col
+    return values, params.get('group_col') or processed.structure.group_col
+
+
+def _spec_stats(results, params):
+    """Get the result objects for the exact log/raw form of a saved figure."""
+    key = (params.get('stats_source_log') if params.get('log_scale')
+           else params.get('stats_source_raw'))
+    if not key:
+        return {}
+    all_stats = getattr(results, key, None)
+    if not isinstance(all_stats, dict):
+        return {}
+    value_cols = list(params.get('value_cols') or [])
+    stat_cols = params.get('stats_columns')
+    if isinstance(stat_cols, dict):
+        pairs = [(col, stat_cols.get(col)) for col in value_cols]
+    elif stat_cols:
+        pairs = list(zip(value_cols, stat_cols))
+    else:
+        pairs = [(col, col) for col in value_cols]
+    return {plot_col: all_stats[res_col]
+            for plot_col, res_col in pairs
+            if res_col and res_col in all_stats}
+
+
+def _build_multi_figure(spec, processed, results):
+    params = spec['params']
+    settings = spec['settings']
+    viz = make_visualizer(settings)
+    value_cols = list(params.get('value_cols') or [])
+    if not value_cols:
+        raise ValueError("Saved figure has no selected columns")
+    data, group_col = _prepare_spec_data(processed, params)
+    stats = _spec_stats(results, params)
+    log_scale = bool(params.get('log_scale', False))
+    design = params.get('design', 'one')
+
+    if design == 'three':
+        return viz.plot_threeway_multi_panel(
+            data=data, value_cols=value_cols,
+            factor_a_col=params['factor_a_col'],
+            factor_b_col=params['factor_b_col'],
+            factor_c_col=params['factor_c_col'],
+            threeway_results=stats, ncols=params.get('ncols', 6),
+            factor_a_name=params.get('factor_a_name'),
+            factor_b_name=params.get('factor_b_name'),
+            factor_c_name=params.get('factor_c_name'),
+            ylabel=params.get('ylabel', 'Concentration'),
+            show_points=settings.get('show_points', True),
+            plot_type=settings.get('plot_type', 'box'),
+            log_scale=log_scale,
+        )
+    if design == 'two':
+        return viz.plot_twoway_multi_panel(
+            data=data, value_cols=value_cols,
+            factor_a_col=params['factor_a_col'],
+            factor_b_col=params['factor_b_col'],
+            twoway_results=stats, ncols=params.get('ncols', 6),
+            factor_a_name=params.get('factor_a_name'),
+            factor_b_name=params.get('factor_b_name'),
+            ylabel=params.get('ylabel', 'Concentration'),
+            show_points=settings.get('show_points', True),
+            plot_type=settings.get('plot_type', 'box'),
+            log_scale=log_scale,
+        )
+    return viz.plot_multi_panel_groups_with_stats(
+        data, value_cols, group_col, stats,
+        ncols=params.get('ncols', 6),
+        plot_type=settings.get('plot_type', 'box'),
+        log_scale=log_scale,
+        show_points=settings.get('show_points', True),
+        ylabel=params.get('ylabel', 'Concentration'),
+    )
+
+
+def _build_interaction_figure(spec, processed, results):
+    params = spec['params']
+    settings = spec['settings']
+    viz = make_visualizer(settings)
+    value_cols = list(params.get('value_cols') or [])
+    data, _ = _prepare_spec_data(processed, params)
+    stats = _spec_stats(results, params)
+    if params.get('design') == 'three':
+        return viz.plot_threeway_interaction_multi_panel(
+            data=data, value_cols=value_cols,
+            factor_a_col=params['factor_a_col'],
+            factor_b_col=params['factor_b_col'],
+            factor_c_col=params['factor_c_col'],
+            threeway_results=stats, ncols=params.get('ncols', 6),
+            factor_a_name=params.get('factor_a_name'),
+            factor_b_name=params.get('factor_b_name'),
+            factor_c_name=params.get('factor_c_name'),
+            ylabel=params.get('ylabel', 'Concentration'),
+        )
+    return viz.plot_twoway_interaction_multi_panel(
+        data=data, value_cols=value_cols,
+        factor_a_col=params['factor_a_col'],
+        factor_b_col=params['factor_b_col'],
+        twoway_results=stats, ncols=params.get('ncols', 6),
+        factor_a_name=params.get('factor_a_name'),
+        factor_b_name=params.get('factor_b_name'),
+        ylabel=params.get('ylabel', 'Concentration'),
+    )
+
+
+def _build_composition_data(processed, params):
+    data = _filtered_sample_data(processed)
+    pct_cols = list(params.get('pct_cols') or [])
+    factor_cols = [c for c in (params.get('factor_cols') or []) if c in data.columns]
+    if factor_cols:
+        group_series = data[factor_cols[0]].astype(str)
+        for col in factor_cols[1:]:
+            group_series = group_series + ' - ' + data[col].astype(str)
+        group_col = '_factorial_group_'
+    else:
+        group_col = params.get('group_col') or processed.structure.group_col
+        if group_col not in data.columns:
+            raise ValueError("No grouping column for composition figure")
+        group_series = data[group_col]
+    missing = [c for c in pct_cols if c not in processed.percentages.columns]
+    if missing:
+        raise ValueError(f"Missing percentage columns: {missing}")
+    values = processed.percentages.loc[data.index, pct_cols].reset_index(drop=True)
+    meta = group_series.reset_index(drop=True).rename(group_col)
+    return pd.concat([meta, values], axis=1), group_col
+
+
+def _build_category_data(processed, params):
+    data = _filtered_sample_data(processed)
+    factor_cols = [c for c in (params.get('factor_cols') or []) if c in data.columns]
+    if factor_cols:
+        group_series = data[factor_cols[0]].astype(str)
+        for col in factor_cols[1:]:
+            group_series = group_series + ' - ' + data[col].astype(str)
+        group_col = '_factorial_group_'
+        data = data.copy()
+        data[group_col] = group_series
+        return data, group_col
+    group_col = params.get('group_col') or processed.structure.group_col
+    return data, group_col
+
+
+def _build_composition_figure(spec, processed):
+    params = spec['params']
+    settings = spec['settings']
+    viz = make_visualizer(settings)
+    data, group_col = _build_composition_data(processed, params)
+    pct_cols = list(params.get('pct_cols') or [])
+    kind = spec['kind']
+    if kind == 'composition_pie':
+        return viz.plot_composition_pie_charts(
+            data, group_col, pct_cols,
+            title=params.get('title'),
+            top_n=params.get('top_n', 7),
+            other_threshold=params.get('other_threshold', 2.0),
+        )
+    if kind == 'composition_bars':
+        return viz.plot_composition_horizontal_bars(
+            data, group_col, pct_cols,
+            title=params.get('title'),
+            top_n=params.get('top_n', 15),
+            show_values=params.get('show_values', True),
+        )
+    return viz.plot_composition_stacked_horizontal(
+        data, group_col, pct_cols,
+        title=params.get('title'),
+        top_n=params.get('top_n', 12),
+    )
+
+
+def _build_category_figure(spec, processed):
+    params = spec['params']
+    viz = make_visualizer(spec['settings'])
+    data, group_col = _build_category_data(processed, params)
+    return viz.plot_category_composition_pie_charts(
+        data=data,
+        group_col=group_col,
+        bile_acid_cols=list(params.get('bile_acid_cols') or processed.structure.bile_acid_cols),
+        title=params.get('title', 'Bile Acid Category Composition by Group'),
+    )
+
+
+def _build_heatmap_figure(spec, processed):
+    params = spec['params']
+    viz = make_visualizer(spec['settings'])
+    data = _filtered_sample_data(processed)
+    group_col = params.get('group_col') or processed.structure.group_col
+    factor_cols = params.get('factor_cols') or {group_col: group_col}
+    return viz.plot_faceted_heatmap(
+        sample_data=data,
+        totals=processed.totals.loc[data.index],
+        group_col=group_col,
+        selected_categories=params.get('selected_categories') or {},
+        category_display_names=ANALYSIS_GROUP_DISPLAY_NAMES,
+        normalization=params.get('normalization', 'zscore'),
+        cmap=params.get('cmap', 'RdBu_r'),
+        sample_id_col=params.get('sample_id_col') or processed.structure.sample_id_col,
+        factor_cols=factor_cols,
+    )
+
+
+def build_figure_from_spec(spec, processed, results):
+    """Rebuild one saved figure.  Caller closes it after writing the PDF."""
+    kind = spec.get('kind')
+    if kind in ('oneway_multi', 'twoway_multi', 'threeway_multi'):
+        return _build_multi_figure(spec, processed, results)
+    if kind in ('twoway_interaction', 'threeway_interaction'):
+        return _build_interaction_figure(spec, processed, results)
+    if kind in ('composition_pie', 'composition_bars', 'composition_stacked'):
+        return _build_composition_figure(spec, processed)
+    if kind == 'category_pie':
+        return _build_category_figure(spec, processed)
+    if kind == 'heatmap':
+        return _build_heatmap_figure(spec, processed)
+    raise ValueError(f"Unknown saved figure kind: {kind}")
+
+
+def _make_spec(kind, settings, params):
+    return {
+        'kind': kind,
+        'settings': copy.deepcopy(settings),
+        'params': copy.deepcopy(params),
+    }
+
+
+def iter_default_export_specs(processed, results, settings):
+    """Recipes for figures whose tabs were never opened.
+
+    These complement iter_all_export_figures(), which supplies the standard
+    concentration/total/percentage/ratio variants.  Viewed recipes are merged
+    first, so a user-customized version always wins over these defaults.
+    """
+    group_col = processed.structure.group_col
+    if not group_col or not results:
+        return
+    is_threeway = bool(getattr(results, 'is_threeway', False))
+    is_twoway = bool(getattr(results, 'is_twoway', False))
+    valid_data = _filtered_sample_data(processed)
+    valid_index = valid_data.index
+    if is_threeway:
+        design = 'three'
+        factor_cols = [results.factor_a_col, results.factor_b_col, results.factor_c_col]
+        factor_names = [results.factor_a_name, results.factor_b_name, results.factor_c_name]
+    elif is_twoway:
+        design = 'two'
+        factor_cols = [results.factor_a_col, results.factor_b_col]
+        factor_names = [results.factor_a_name, results.factor_b_name]
+    else:
+        design = 'one'
+        factor_cols = []
+        factor_names = []
+
+    common = {
+        'design': design,
+        'group_col': group_col,
+        'factor_cols': factor_cols,
+        'factor_a_col': factor_cols[0] if factor_cols else '',
+        'factor_b_col': factor_cols[1] if len(factor_cols) > 1 else '',
+        'factor_c_col': factor_cols[2] if len(factor_cols) > 2 else '',
+        'factor_a_name': factor_names[0] if factor_names else '',
+        'factor_b_name': factor_names[1] if len(factor_names) > 1 else '',
+        'factor_c_name': factor_names[2] if len(factor_names) > 2 else '',
+        'show_points': settings.get('show_points', True),
+        'plot_type': settings.get('plot_type', 'box'),
+    }
+
+    # Pool-composition figures (always shown in the Percentages tab).
+    pct_cols = [c for c in processed.percentages.columns if c.endswith('_pct')]
+    if pct_cols and (is_threeway or is_twoway):
+        # The standard generator covers one-way percentage plots; factorial
+        # designs need this default because that tab may never be opened.
+        top_pcts = processed.percentages.loc[valid_index, pct_cols].mean().nlargest(10).index.tolist()
+        display_names = [c.replace('_pct', '') for c in top_pcts]
+        name = 'percentages_threeway' if is_threeway else 'percentages_twoway'
+        yield name, _make_spec(
+            'threeway_multi' if is_threeway else 'twoway_multi', settings,
+            {
+                **common, 'data_source': 'percentages',
+                'value_cols': display_names, 'source_cols': top_pcts,
+                'stats_source_raw': _result_source_name(results, 'percentages'),
+                'stats_columns': top_pcts,
+                'ylabel': '% of Total BA', 'ncols': 6, 'log_scale': False,
+            },
+        )
+    if pct_cols:
+        base = {**common, 'data_source': 'composition', 'pct_cols': pct_cols}
+        yield 'percentages_pie', _make_spec('composition_pie', settings, {
+            **base, 'title': 'Bile Acid Pool Composition by Group',
+            'top_n': 7, 'other_threshold': 2.0,
+        })
+        yield 'percentages_bars', _make_spec('composition_bars', settings, {
+            **base, 'title': 'Bile Acid Pool Composition Comparison',
+            'top_n': 15, 'show_values': True,
+        })
+        yield 'percentages_stacked', _make_spec('composition_stacked', settings, {
+            **base, 'title': 'Complete Bile Acid Pool Composition', 'top_n': 12,
+        })
+
+    # Category-composition pie grid (on-demand in the Totals tab).
+    if processed.structure.bile_acid_cols:
+        yield 'category_composition_pie', _make_spec('category_pie', settings, {
+            **common,
+            'bile_acid_cols': list(processed.structure.bile_acid_cols),
+            'title': 'Bile Acid Category Composition by Group',
+        })
+
+    # Hydrophobicity figures.
+    hydro_df = st.session_state.get('hydrophobicity')
+    if hydro_df is not None and not hydro_df.empty:
+        hydro_valid = hydro_df.loc[hydro_df.index.intersection(valid_index)]
+        hydro_cols = [c for c in hydro_df.columns if not hydro_valid[c].isna().all()]
+        if hydro_cols:
+            hydro_name = ('hydrophobicity_threeway' if is_threeway
+                          else 'hydrophobicity_twoway' if is_twoway
+                          else 'hydrophobicity')
+            yield hydro_name, _make_spec(
+                'threeway_multi' if is_threeway else 'twoway_multi' if is_twoway else 'oneway_multi',
+                settings,
+                {
+                    **common,
+                    'data_source': 'hydro',
+                    'value_cols': hydro_cols,
+                    'source_cols': hydro_cols,
+                    'stats_source_raw': _result_source_name(results, 'hydrophobicity'),
+                    'stats_columns': hydro_cols,
+                    'ylabel': 'HI Score',
+                    'ncols': 2,
+                    'log_scale': False,
+                },
+            )
+
+    # Default heatmap, matching the Heatmap tab's initial choices.
+    available_bas = set(processed.structure.bile_acid_cols)
+    available_categories = {}
+    for cat_key, ba_list in ANALYSIS_GROUPS.items():
+        present = [ba for ba in ba_list if ba in available_bas]
+        if present and cat_key in processed.totals.columns:
+            available_categories[ANALYSIS_GROUP_DISPLAY_NAMES.get(cat_key, cat_key)] = cat_key
+    if available_categories:
+        names = sorted(available_categories)
+        selected_display = [n for n in ["Primary", "Secondary", "Oxidized (Keto)", "Epimerized (Iso)"]
+                            if n in names] or names[:3]
+        selected_cats = {
+            available_categories[name]: [ba for ba in ANALYSIS_GROUPS[available_categories[name]]
+                                           if ba in available_bas]
+            for name in selected_display
+        }
+        factor_dict = processed.structure.factors or {group_col: group_col}
+        yield 'faceted_heatmap', _make_spec('heatmap', settings, {
+            **common,
+            'selected_categories': selected_cats,
+            'normalization': 'zscore',
+            'cmap': 'RdBu_r',
+            'factor_cols': factor_dict,
+            'sample_id_col': processed.structure.sample_id_col,
+        })
+
+    # Interaction figures for the default selections.
+    if is_threeway:
+        top_conc = processed.concentrations.mean().nlargest(10).index.tolist()
+        if top_conc:
+            yield 'concentrations_threeway_interaction', _make_spec('threeway_interaction', settings, {
+                **common, 'data_source': 'sample',
+                'value_cols': top_conc, 'source_cols': top_conc,
+                'stats_source_raw': _result_source_name(results, 'individual_ba'),
+                'stats_columns': top_conc,
+                'ylabel': f'Concentration ({settings.get("units", "nmol/L")})',
+                'ncols': 6,
+            })
+        ratio_valid = processed.ratios.loc[valid_index]
+        ratio_cols = [c for c in processed.ratios.columns if not ratio_valid[c].isna().all()][:9]
+        if ratio_cols:
+            yield 'ratios_threeway_interaction', _make_spec('threeway_interaction', settings, {
+                **common, 'data_source': 'ratios',
+                'value_cols': ratio_cols, 'source_cols': ratio_cols,
+                'stats_source_raw': _result_source_name(results, 'ratios'),
+                'stats_columns': ratio_cols,
+                'ylabel': 'Ratio', 'ncols': 6,
+            })
+    elif is_twoway:
+        # Two-way concentration interactions are already yielded by
+        # iter_all_export_figures() for its standard selections.  Ratio
+        # interactions are not, so they need a default recipe here.
+        ratio_valid = processed.ratios.loc[valid_index]
+        ratio_cols = [c for c in processed.ratios.columns if not ratio_valid[c].isna().all()][:9]
+        if ratio_cols:
+            yield 'ratios_interaction', _make_spec('twoway_interaction', settings, {
+                **common, 'data_source': 'ratios',
+                'value_cols': ratio_cols, 'source_cols': ratio_cols,
+                'stats_source_raw': _result_source_name(results, 'ratios'),
+                'stats_columns': ratio_cols,
+                'ylabel': 'Ratio', 'ncols': 6,
+            })
+
+
+def iter_export_figures(processed, results, settings, errors=None):
+    """Yield all export figures, preferring the exact recipes users viewed.
+
+    ``errors`` may be a list; recipe rebuild failures are appended there so the
+    export tab can warn instead of silently omitting a viewed figure.
+    """
+    seen = set()
+    specs = st.session_state.get('figure_specs') or {}
+
+    for name, spec in specs.items():
+        if name in seen:
+            continue
+        try:
+            fig = build_figure_from_spec(spec, processed, results)
+        except Exception as exc:
+            if errors is not None:
+                errors.append(f"{name} (viewed recipe): {exc}")
+            continue
+        if fig is None:
+            continue
+        seen.add(name)
+        yield name, fig
+
+    for name, spec in iter_default_export_specs(processed, results, settings):
+        if name in seen:
+            continue
+        try:
+            fig = build_figure_from_spec(spec, processed, results)
+        except Exception as exc:
+            if errors is not None:
+                errors.append(f"{name} (default recipe): {exc}")
+            continue
+        if fig is None:
+            continue
+        seen.add(name)
+        yield name, fig
+
+    for name, fig in iter_all_export_figures(processed, results, settings):
+        if name in seen:
+            continue
+        seen.add(name)
+        yield name, fig
+
+
+def iter_all_export_figures(processed, results, settings):
+    """Yield (name, figure) one at a time so export never holds every figure."""
     from config.bile_acid_species import get_primary, get_secondary, get_glycine_conjugated, get_taurine_conjugated
     
-    figures = {}
     viz = make_visualizer(settings)
     group_col = processed.structure.group_col
     
     if not group_col or not results:
-        return figures
+        return
     
     data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
     data = data[data[group_col].astype(str).str.lower() != 'nan']
@@ -359,7 +964,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                         ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
-                    figures[f'concentrations{suffix}'] = fig
+                    yield f'concentrations{suffix}', fig
                 except Exception:
                     pass
 
@@ -388,7 +993,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                         ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
-                    figures[f'totals{suffix}'] = fig
+                    yield f'totals{suffix}', fig
                 except Exception:
                     pass
 
@@ -410,7 +1015,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
                         ylabel='Ratio', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
-                    figures[f'ratios{suffix}'] = fig
+                    yield f'ratios{suffix}', fig
                 except Exception:
                     pass
 
@@ -451,7 +1056,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_name=fa_name, factor_b_name=fb_name,
                         ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
-                    figures[f'concentrations{suffix}'] = fig
+                    yield f'concentrations{suffix}', fig
                 except Exception:
                     pass
             try:
@@ -461,7 +1066,7 @@ def generate_all_export_figures(processed, results, settings):
                     twoway_results=tw_stats_raw, ncols=6,
                     factor_a_name=fa_name, factor_b_name=fb_name,
                     ylabel=f'Concentration ({settings["units"]})')
-                figures[f'concentrations_{sel_name}_interaction'] = fig_int
+                yield f'concentrations_{sel_name}_interaction', fig_int
             except Exception:
                 pass
 
@@ -491,7 +1096,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_name=fa_name, factor_b_name=fb_name,
                         ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
-                    figures[f'totals{suffix}'] = fig
+                    yield f'totals{suffix}', fig
                 except Exception:
                     pass
             try:
@@ -501,7 +1106,7 @@ def generate_all_export_figures(processed, results, settings):
                     twoway_results=tw_stats_raw, ncols=6,
                     factor_a_name=fa_name, factor_b_name=fb_name,
                     ylabel=f'Concentration ({settings["units"]})')
-                figures['totals_interaction'] = fig_int
+                yield 'totals_interaction', fig_int
             except Exception:
                 pass
 
@@ -524,7 +1129,7 @@ def generate_all_export_figures(processed, results, settings):
                         factor_a_name=fa_name, factor_b_name=fb_name,
                         ylabel='Ratio', show_points=settings['show_points'],
                         plot_type=settings['plot_type'], log_scale=log_scale)
-                    figures[f'ratios{suffix}'] = fig
+                    yield f'ratios{suffix}', fig
                 except Exception:
                     pass
 
@@ -555,7 +1160,7 @@ def generate_all_export_figures(processed, results, settings):
                         data, selected, group_col, stats_log if log_scale else stats_raw, ncols=6,
                         plot_type=settings['plot_type'], log_scale=log_scale,
                         show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
-                    figures[f'concentrations{suffix}'] = fig
+                    yield f'concentrations{suffix}', fig
                 except Exception:
                     pass
 
@@ -581,7 +1186,7 @@ def generate_all_export_figures(processed, results, settings):
                         totals_stats_log if log_scale else totals_stats_raw, ncols=6,
                         plot_type=settings['plot_type'], log_scale=log_scale,
                         show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
-                    figures[f'totals{suffix}'] = fig
+                    yield f'totals{suffix}', fig
                 except Exception:
                     pass
 
@@ -604,7 +1209,7 @@ def generate_all_export_figures(processed, results, settings):
                     pct_display, display_cols, group_col, pct_stats, ncols=6,
                     plot_type=settings['plot_type'], log_scale=False,
                     show_points=settings['show_points'], ylabel='% of Total BA')
-                figures['percentages_top10'] = fig
+                yield 'percentages_top10', fig
             except Exception:
                 pass
 
@@ -623,15 +1228,20 @@ def generate_all_export_figures(processed, results, settings):
                         ratios_stats_log if log_scale else ratios_stats_raw, ncols=6,
                         plot_type=settings['plot_type'], log_scale=log_scale,
                         show_points=settings['show_points'], ylabel='Ratio')
-                    figures[f'ratios{suffix}'] = fig
+                    yield f'ratios{suffix}', fig
                 except Exception:
                     pass
 
-    return figures
+    return
 
 
 def create_results_zip(processed, results, figures, report_gen, settings=None):
-    """Create ZIP with all results."""
+    """Create a ZIP on disk, consuming figures one at a time.
+
+    Returns ``(zip_path, figure_count, errors)``.  Writing to a temporary file and
+    closing each figure immediately keeps peak memory bounded to one workbook or
+    one figure at a time.
+    """
     # Get metadata columns
     id_cols = []
     if processed.structure.sample_id_col and processed.structure.sample_id_col in processed.sample_data.columns:
@@ -645,46 +1255,84 @@ def create_results_zip(processed, results, figures, report_gen, settings=None):
 
     metadata = processed.sample_data[id_cols] if id_cols else pd.DataFrame(index=processed.sample_data.index)
 
-    buf = BytesIO()
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-        # Data files with metadata
-        for name, df in [('concentrations', processed.concentrations),
-                         ('percentages', processed.percentages),
-                         ('totals', processed.totals),
-                         ('ratios', processed.ratios)]:
-            export_df = pd.concat([metadata, df], axis=1)
-            zf.writestr(f'data/{name}.xlsx', df_to_excel_bytes(export_df))
+    tmp = tempfile.NamedTemporaryFile(prefix='bile_acid_results_', suffix='.zip', delete=False)
+    zip_path = tmp.name
+    tmp.close()
 
-        # Full data
-        full = pd.concat([processed.sample_data, processed.totals, processed.ratios, processed.percentages], axis=1)
-        zf.writestr('data/full_analysis.xlsx', df_to_excel_bytes(full))
-        
-        # LOD-highlighted Excel
-        lod_handling = settings.get('lod_handling', 'half_lod') if settings else 'half_lod'
-        lod_excel_bytes = create_full_data_excel_with_highlighting(processed, lod_handling)
-        zf.writestr('data/full_data_lod_highlighted.xlsx', lod_excel_bytes)
-        
-        # Excel report
-        if report_gen:
-            excel_buf = BytesIO()
-            report_gen.display_orders = report_display_orders(settings or {})
-            report_gen.save_excel_report(excel_buf)
-            excel_buf.seek(0)
-            zf.writestr('reports/statistical_report.xlsx', excel_buf.getvalue())
-        
-        # Figures — may be matplotlib objects or pre-rendered PDF bytes
-        for name, fig in figures.items():
-            if fig:
-                if isinstance(fig, bytes):
-                    zf.writestr(f'figures/{name}.pdf', fig)
-                else:
-                    zf.writestr(f'figures/{name}.pdf', fig_to_bytes(fig, 'pdf'))
-    
-    buf.seek(0)
-    return buf.getvalue()
+    errors = []
+    figure_count = 0
+    try:
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Data files with metadata
+            for name, df in [('concentrations', processed.concentrations),
+                             ('percentages', processed.percentages),
+                             ('totals', processed.totals),
+                             ('ratios', processed.ratios)]:
+                try:
+                    export_df = pd.concat([metadata, df], axis=1)
+                    zf.writestr(f'data/{name}.xlsx', df_to_excel_bytes(export_df))
+                    del export_df
+                except Exception as exc:
+                    errors.append(f'{name} workbook: {exc}')
+
+            # Full data
+            try:
+                full = pd.concat([processed.sample_data, processed.totals, processed.ratios, processed.percentages], axis=1)
+                zf.writestr('data/full_analysis.xlsx', df_to_excel_bytes(full))
+                del full
+            except Exception as exc:
+                errors.append(f'full analysis workbook: {exc}')
+
+            # LOD-highlighted Excel
+            try:
+                lod_handling = settings.get('lod_handling', 'lod') if settings else 'lod'
+                lod_excel_bytes = create_full_data_excel_with_highlighting(processed, lod_handling)
+                zf.writestr('data/full_data_lod_highlighted.xlsx', lod_excel_bytes)
+                del lod_excel_bytes
+            except Exception as exc:
+                errors.append(f'LOD-highlighted workbook: {exc}')
+
+            # Excel report. Write it to a temporary file rather than holding a
+            # second full workbook in memory.
+            if report_gen:
+                report_tmp = tempfile.NamedTemporaryFile(prefix='bile_acid_report_', suffix='.xlsx', delete=False)
+                report_path = report_tmp.name
+                report_tmp.close()
+                try:
+                    report_gen.display_orders = report_display_orders(settings or {})
+                    report_gen.save_excel_report(report_path)
+                    zf.write(report_path, 'reports/statistical_report.xlsx')
+                except Exception as exc:
+                    errors.append(f'statistical report: {exc}')
+                finally:
+                    _remove_file(report_path)
+                    # The workbook is already in the ZIP; drop the sheet copies
+                    # so they are not retained while figures are generated.
+                    report_gen.analysis_sheets.clear()
+
+            # Figures are yielded by a generator; close each one before the next.
+            figure_iter = figures.items() if isinstance(figures, dict) else figures
+            try:
+                for name, fig in figure_iter:
+                    if not fig:
+                        continue
+                    try:
+                        zf.writestr(f'figures/{name}.pdf', fig_to_bytes(fig, 'pdf'))
+                        figure_count += 1
+                    except Exception as exc:
+                        errors.append(f'{name} figure: {exc}')
+                    finally:
+                        plt.close(fig)
+            except Exception as exc:
+                errors.append(f'figure generation: {exc}')
+    except Exception:
+        _remove_file(zip_path)
+        raise
+
+    return zip_path, figure_count, errors
 
 
-def create_full_data_excel_with_highlighting(processed, lod_handling='half_lod') -> bytes:
+def create_full_data_excel_with_highlighting(processed, lod_handling='lod') -> bytes:
     """Create Excel workbook with yellow highlighting on cells where LOD values were replaced."""
     from openpyxl.styles import PatternFill
     
@@ -989,7 +1637,6 @@ def render_concentrations_tab(processed, settings):
             tw_stats_log = {b: results.log_threeway_individual_ba.get(b) for b in selected
                            if b in results.log_threeway_individual_ba}
             tw_stats = tw_stats_log if log_scale else tw_stats_raw
-            tw_stats_other = tw_stats_raw if log_scale else tw_stats_log
 
             fig = viz.plot_threeway_multi_panel(
                 data=data, value_cols=selected,
@@ -1000,19 +1647,21 @@ def render_concentrations_tab(processed, settings):
                 plot_type=settings['plot_type'], log_scale=log_scale
             )
             st.pyplot(fig)
-            store_figure(fig, f'concentrations_threeway{"_log" if log_scale else ""}')
+            register_scale_pair('concentrations_threeway', 'threeway_multi', settings, {
+                'design': 'three', 'data_source': 'sample',
+                'value_cols': list(selected), 'source_cols': list(selected),
+                'factor_cols': [fa_col, fb_col, fc_col],
+                'factor_a_col': fa_col, 'factor_b_col': fb_col, 'factor_c_col': fc_col,
+                'factor_a_name': fa_name, 'factor_b_name': fb_name, 'factor_c_name': fc_name,
+                'group_col': group_col,
+                'stats_source_raw': _result_source_name(results, 'individual_ba'),
+                'stats_source_log': _result_source_name(results, 'individual_ba', log=True),
+                'stats_columns': list(selected),
+                'ylabel': f'Concentration ({settings["units"]})', 'ncols': 6,
+                'log_scale': log_scale,
+            })
             plt.close(fig)
 
-            fig_other = viz.plot_threeway_multi_panel(
-                data=data, value_cols=selected,
-                factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-                threeway_results=tw_stats_other, ncols=6,
-                factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-                ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
-                plot_type=settings['plot_type'], log_scale=not log_scale
-            )
-            store_figure(fig_other, f'concentrations_threeway{"_log" if not log_scale else ""}')
-            plt.close(fig_other)
 
             with st.expander("Interaction Plots"):
                 fig_int = viz.plot_threeway_interaction_multi_panel(
@@ -1023,7 +1672,19 @@ def render_concentrations_tab(processed, settings):
                     ylabel=f'Concentration ({settings["units"]})'
                 )
                 st.pyplot(fig_int)
-                store_figure(fig_int, 'concentrations_threeway_interaction')
+                register_figure_spec('concentrations_threeway_interaction', 'threeway_interaction', settings, {
+                    'design': 'three', 'data_source': 'sample',
+                    'value_cols': list(selected), 'source_cols': list(selected),
+                    'factor_cols': [fa_col, fb_col, fc_col],
+                    'factor_a_col': fa_col, 'factor_b_col': fb_col, 'factor_c_col': fc_col,
+                    'factor_a_name': fa_name, 'factor_b_name': fb_name, 'factor_c_name': fc_name,
+                    'group_col': group_col,
+                    'stats_source_raw': _result_source_name(results, 'individual_ba'),
+                    'stats_source_log': _result_source_name(results, 'individual_ba', log=True),
+                    'stats_columns': list(selected),
+                    'ylabel': f'Concentration ({settings["units"]})', 'ncols': 6,
+                    'log_scale': log_scale,
+                })
                 plt.close(fig_int)
 
             with st.expander("Three-Way ANOVA Summary"):
@@ -1043,7 +1704,6 @@ def render_concentrations_tab(processed, settings):
             tw_stats_log = {b: results.log_twoway_individual_ba.get(b) for b in selected
                            if b in results.log_twoway_individual_ba}
             tw_stats = tw_stats_log if log_scale else tw_stats_raw
-            tw_stats_other = tw_stats_raw if log_scale else tw_stats_log
 
             fig = viz.plot_twoway_multi_panel(
                 data=data, value_cols=selected,
@@ -1054,19 +1714,21 @@ def render_concentrations_tab(processed, settings):
                 plot_type=settings['plot_type'], log_scale=log_scale
             )
             st.pyplot(fig)
-            store_figure(fig, f'concentrations_twoway{"_log" if log_scale else ""}')
+            register_scale_pair('concentrations_twoway', 'twoway_multi', settings, {
+                'design': 'two', 'data_source': 'sample',
+                'value_cols': list(selected), 'source_cols': list(selected),
+                'factor_cols': [fa_col, fb_col],
+                'factor_a_col': fa_col, 'factor_b_col': fb_col,
+                'factor_a_name': fa_name, 'factor_b_name': fb_name,
+                'group_col': group_col,
+                'stats_source_raw': _result_source_name(results, 'individual_ba'),
+                'stats_source_log': _result_source_name(results, 'individual_ba', log=True),
+                'stats_columns': list(selected),
+                'ylabel': f'Concentration ({settings["units"]})', 'ncols': 6,
+                'log_scale': log_scale,
+            })
             plt.close(fig)
 
-            fig_other = viz.plot_twoway_multi_panel(
-                data=data, value_cols=selected,
-                factor_a_col=fa_col, factor_b_col=fb_col,
-                twoway_results=tw_stats_other, ncols=6,
-                factor_a_name=fa_name, factor_b_name=fb_name,
-                ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
-                plot_type=settings['plot_type'], log_scale=not log_scale
-            )
-            store_figure(fig_other, f'concentrations_twoway{"_log" if not log_scale else ""}')
-            plt.close(fig_other)
 
             with st.expander("Interaction Plots"):
                 fig_int = viz.plot_twoway_interaction_multi_panel(
@@ -1077,7 +1739,19 @@ def render_concentrations_tab(processed, settings):
                     ylabel=f'Concentration ({settings["units"]})'
                 )
                 st.pyplot(fig_int)
-                store_figure(fig_int, 'concentrations_interaction')
+                register_figure_spec('concentrations_interaction', 'twoway_interaction', settings, {
+                    'design': 'two', 'data_source': 'sample',
+                    'value_cols': list(selected), 'source_cols': list(selected),
+                    'factor_cols': [fa_col, fb_col],
+                    'factor_a_col': fa_col, 'factor_b_col': fb_col,
+                    'factor_a_name': fa_name, 'factor_b_name': fb_name,
+                    'group_col': group_col,
+                    'stats_source_raw': _result_source_name(results, 'individual_ba'),
+                    'stats_source_log': _result_source_name(results, 'individual_ba', log=True),
+                    'stats_columns': list(selected),
+                    'ylabel': f'Concentration ({settings["units"]})', 'ncols': 6,
+                    'log_scale': log_scale,
+                })
                 plt.close(fig_int)
 
             with st.expander("Two-Way ANOVA Summary"):
@@ -1088,20 +1762,23 @@ def render_concentrations_tab(processed, settings):
             stats_dict_raw = {b: results.individual_ba_results.get(b) for b in selected if b in results.individual_ba_results}
             stats_dict_log = {b: results.log_individual_ba_results.get(b) for b in selected if b in results.log_individual_ba_results}
             stats_dict = stats_dict_log if log_scale else stats_dict_raw
-            stats_dict_other = stats_dict_raw if log_scale else stats_dict_log
 
             fig = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict,
                                                          ncols=6, plot_type=settings['plot_type'], log_scale=log_scale,
                                                          show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
             st.pyplot(fig)
-            store_figure(fig, f'concentrations{"_log" if log_scale else ""}')
+            register_scale_pair('concentrations', 'oneway_multi', settings, {
+                'design': 'one', 'data_source': 'sample',
+                'value_cols': list(selected), 'source_cols': list(selected),
+                'factor_cols': [], 'group_col': group_col,
+                'stats_source_raw': _result_source_name(results, 'individual_ba'),
+                'stats_source_log': _result_source_name(results, 'individual_ba', log=True),
+                'stats_columns': list(selected),
+                'ylabel': f'Concentration ({settings["units"]})', 'ncols': 6,
+                'log_scale': log_scale,
+            })
             plt.close(fig)
 
-            fig_other = viz.plot_multi_panel_groups_with_stats(data, selected, group_col, stats_dict_other,
-                                                               ncols=6, plot_type=settings['plot_type'], log_scale=not log_scale,
-                                                               show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
-            store_figure(fig_other, f'concentrations{"_log" if not log_scale else ""}')
-            plt.close(fig_other)
 
             with st.expander("Statistical Summary"):
                 st.dataframe(get_significant_differences_summary(stats_dict), hide_index=True)
@@ -1141,7 +1818,6 @@ def render_totals_tab(processed, settings):
         tw_stats_raw = {t: results.threeway_totals.get(t) for t in available if t in results.threeway_totals}
         tw_stats_log = {t: results.log_threeway_totals.get(t) for t in available if t in results.log_threeway_totals}
         tw_stats = tw_stats_log if log_scale else tw_stats_raw
-        tw_stats_other = tw_stats_raw if log_scale else tw_stats_log
 
         fig = viz.plot_threeway_multi_panel(
             data=combined, value_cols=available,
@@ -1152,19 +1828,21 @@ def render_totals_tab(processed, settings):
             plot_type=settings['plot_type'], log_scale=log_scale
         )
         st.pyplot(fig)
-        store_figure(fig, f'totals{"_log" if log_scale else ""}')
+        register_scale_pair('totals', 'threeway_multi', settings, {
+            'design': 'three', 'data_source': 'totals',
+            'value_cols': list(available), 'source_cols': list(available),
+            'factor_cols': [fa_col, fb_col, fc_col],
+            'factor_a_col': fa_col, 'factor_b_col': fb_col, 'factor_c_col': fc_col,
+            'factor_a_name': fa_name, 'factor_b_name': fb_name, 'factor_c_name': fc_name,
+            'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'totals'),
+            'stats_source_log': _result_source_name(results, 'totals', log=True),
+            'stats_columns': list(available),
+            'ylabel': f'Concentration ({settings["units"]})', 'ncols': 6,
+            'log_scale': log_scale,
+        })
         plt.close(fig)
 
-        fig_other = viz.plot_threeway_multi_panel(
-            data=combined, value_cols=available,
-            factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-            threeway_results=tw_stats_other, ncols=6,
-            factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-            ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
-            plot_type=settings['plot_type'], log_scale=not log_scale
-        )
-        store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
-        plt.close(fig_other)
 
         with st.expander("Three-Way ANOVA Summary"):
             if tw_stats:
@@ -1178,7 +1856,6 @@ def render_totals_tab(processed, settings):
         tw_stats_raw = {t: results.twoway_totals.get(t) for t in available if t in results.twoway_totals}
         tw_stats_log = {t: results.log_twoway_totals.get(t) for t in available if t in results.log_twoway_totals}
         tw_stats = tw_stats_log if log_scale else tw_stats_raw
-        tw_stats_other = tw_stats_raw if log_scale else tw_stats_log
 
         fig = viz.plot_twoway_multi_panel(
             data=combined, value_cols=available,
@@ -1189,19 +1866,21 @@ def render_totals_tab(processed, settings):
             plot_type=settings['plot_type'], log_scale=log_scale
         )
         st.pyplot(fig)
-        store_figure(fig, f'totals{"_log" if log_scale else ""}')
+        register_scale_pair('totals', 'twoway_multi', settings, {
+            'design': 'two', 'data_source': 'totals',
+            'value_cols': list(available), 'source_cols': list(available),
+            'factor_cols': [fa_col, fb_col],
+            'factor_a_col': fa_col, 'factor_b_col': fb_col,
+            'factor_a_name': results.factor_a_name, 'factor_b_name': results.factor_b_name,
+            'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'totals'),
+            'stats_source_log': _result_source_name(results, 'totals', log=True),
+            'stats_columns': list(available),
+            'ylabel': f'Concentration ({settings["units"]})', 'ncols': 6,
+            'log_scale': log_scale,
+        })
         plt.close(fig)
 
-        fig_other = viz.plot_twoway_multi_panel(
-            data=combined, value_cols=available,
-            factor_a_col=fa_col, factor_b_col=fb_col,
-            twoway_results=tw_stats_other, ncols=6,
-            factor_a_name=results.factor_a_name, factor_b_name=results.factor_b_name,
-            ylabel=f'Concentration ({settings["units"]})', show_points=settings['show_points'],
-            plot_type=settings['plot_type'], log_scale=not log_scale
-        )
-        store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
-        plt.close(fig_other)
 
         with st.expander("Two-Way ANOVA Summary"):
             if tw_stats:
@@ -1213,20 +1892,23 @@ def render_totals_tab(processed, settings):
         stats_dict_raw = {t: results.totals_results.get(t) for t in available if t in results.totals_results}
         stats_dict_log = {t: results.log_totals_results.get(t) for t in available if t in results.log_totals_results}
         stats_dict = stats_dict_log if log_scale else stats_dict_raw
-        stats_dict_other = stats_dict_raw if log_scale else stats_dict_log
 
         fig = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict,
                                                      ncols=6, plot_type=settings['plot_type'], log_scale=log_scale,
                                                      show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
         st.pyplot(fig)
-        store_figure(fig, f'totals{"_log" if log_scale else ""}')
+        register_scale_pair('totals', 'oneway_multi', settings, {
+            'design': 'one', 'data_source': 'totals',
+            'value_cols': list(available), 'source_cols': list(available),
+            'factor_cols': [], 'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'totals'),
+            'stats_source_log': _result_source_name(results, 'totals', log=True),
+            'stats_columns': list(available),
+            'ylabel': f'Concentration ({settings["units"]})', 'ncols': 6,
+            'log_scale': log_scale,
+        })
         plt.close(fig)
 
-        fig_other = viz.plot_multi_panel_groups_with_stats(combined, available, group_col, stats_dict_other,
-                                                           ncols=6, plot_type=settings['plot_type'], log_scale=not log_scale,
-                                                           show_points=settings['show_points'], ylabel=f'Concentration ({settings["units"]})')
-        store_figure(fig_other, f'totals{"_log" if not log_scale else ""}')
-        plt.close(fig_other)
 
         with st.expander("Statistical Summary"):
             rows = []
@@ -1271,7 +1953,14 @@ def render_totals_tab(processed, settings):
             title='Bile Acid Category Composition by Group',
         )
         st.pyplot(fig_cat_pie)
-        store_figure(fig_cat_pie, 'category_composition_pie')
+        register_figure_spec('category_composition_pie', 'category_pie', settings, {
+            'factor_cols': ([results.factor_a_col, results.factor_b_col, results.factor_c_col]
+                            if is_threeway else
+                            [results.factor_a_col, results.factor_b_col] if is_twoway else []),
+            'group_col': group_col,
+            'bile_acid_cols': list(ba_names),
+            'title': 'Bile Acid Category Composition by Group',
+        })
         plt.close(fig_cat_pie)
 
 
@@ -1410,7 +2099,17 @@ def render_percentages_tab(processed, settings):
                 plot_type=settings['plot_type']
             )
             st.pyplot(fig)
-            store_figure(fig, 'percentages_threeway')
+            register_figure_spec('percentages_threeway', 'threeway_multi', settings, {
+                'design': 'three', 'data_source': 'percentages',
+                'value_cols': list(display_names), 'source_cols': list(selected_pct_cols),
+                'factor_cols': [fa_col, fb_col, fc_col],
+                'factor_a_col': fa_col, 'factor_b_col': fb_col, 'factor_c_col': fc_col,
+                'factor_a_name': fa_name, 'factor_b_name': fb_name, 'factor_c_name': fc_name,
+                'group_col': group_col,
+                'stats_source_raw': _result_source_name(results, 'percentages'),
+                'stats_columns': list(selected_pct_cols),
+                'ylabel': '% of Total BA', 'ncols': 6, 'log_scale': False,
+            })
             plt.close(fig)
         except Exception as e:
             st.warning(f"Could not generate three-way percentage plot: {e}")
@@ -1445,7 +2144,17 @@ def render_percentages_tab(processed, settings):
                 plot_type=settings['plot_type']
             )
             st.pyplot(fig)
-            store_figure(fig, 'percentages_twoway')
+            register_figure_spec('percentages_twoway', 'twoway_multi', settings, {
+                'design': 'two', 'data_source': 'percentages',
+                'value_cols': list(display_names), 'source_cols': list(selected_pct_cols),
+                'factor_cols': [fa_col, fb_col],
+                'factor_a_col': fa_col, 'factor_b_col': fb_col,
+                'factor_a_name': fa_name, 'factor_b_name': fb_name,
+                'group_col': group_col,
+                'stats_source_raw': _result_source_name(results, 'percentages'),
+                'stats_columns': list(selected_pct_cols),
+                'ylabel': '% of Total BA', 'ncols': 6, 'log_scale': False,
+            })
             plt.close(fig)
         except Exception as e:
             st.warning(f"Could not generate two-way percentage plot: {e}")
@@ -1475,7 +2184,14 @@ def render_percentages_tab(processed, settings):
         )
 
         st.pyplot(fig)
-        store_figure(fig, 'percentages')
+        register_figure_spec('percentages', 'oneway_multi', settings, {
+            'design': 'one', 'data_source': 'percentages',
+            'value_cols': list(display_names), 'source_cols': list(selected_pct_cols),
+            'factor_cols': [], 'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'percentages'),
+            'stats_columns': list(selected_pct_cols),
+            'ylabel': '% of Total BA', 'ncols': 6, 'log_scale': False,
+        })
         plt.close(fig)
 
     # =========================================================================
@@ -1512,7 +2228,14 @@ def render_percentages_tab(processed, settings):
         top_n=7, other_threshold=2.0
     )
     st.pyplot(fig_pie)
-    store_figure(fig_pie, 'percentages_pie')
+    composition_factors = ([results.factor_a_col, results.factor_b_col, results.factor_c_col]
+                           if is_threeway else
+                           [results.factor_a_col, results.factor_b_col] if is_twoway else [])
+    register_figure_spec('percentages_pie', 'composition_pie', settings, {
+        'factor_cols': composition_factors, 'group_col': group_col,
+        'pct_cols': list(pct_cols), 'title': 'Bile Acid Pool Composition by Group',
+        'top_n': 7, 'other_threshold': 2.0,
+    })
     plt.close(fig_pie)
 
     # =========================================================================
@@ -1529,7 +2252,11 @@ def render_percentages_tab(processed, settings):
         top_n=15, show_values=True
     )
     st.pyplot(fig_hbar)
-    store_figure(fig_hbar, 'percentages_bars')
+    register_figure_spec('percentages_bars', 'composition_bars', settings, {
+        'factor_cols': composition_factors, 'group_col': group_col,
+        'pct_cols': list(pct_cols), 'title': 'Bile Acid Pool Composition Comparison',
+        'top_n': 15, 'show_values': True,
+    })
     plt.close(fig_hbar)
     
     # =========================================================================
@@ -1545,7 +2272,11 @@ def render_percentages_tab(processed, settings):
         top_n=12
     )
     st.pyplot(fig_stacked)
-    store_figure(fig_stacked, 'percentages_stacked')
+    register_figure_spec('percentages_stacked', 'composition_stacked', settings, {
+        'factor_cols': composition_factors, 'group_col': group_col,
+        'pct_cols': list(pct_cols), 'title': 'Complete Bile Acid Pool Composition',
+        'top_n': 12,
+    })
     plt.close(fig_stacked)
     
     # =========================================================================
@@ -1766,7 +2497,6 @@ def render_ratios_tab(processed, settings):
         tw_stats_log = {r: results.log_threeway_ratios.get(r) for r in selected_ratios
                        if r in results.log_threeway_ratios}
         tw_stats = tw_stats_log if log_scale else tw_stats_raw
-        tw_stats_other = tw_stats_raw if log_scale else tw_stats_log
 
         fig = viz.plot_threeway_multi_panel(
             data=combined, value_cols=selected_ratios,
@@ -1777,19 +2507,20 @@ def render_ratios_tab(processed, settings):
             plot_type=settings['plot_type'], log_scale=log_scale
         )
         st.pyplot(fig)
-        store_figure(fig, f'ratios_threeway{"_log" if log_scale else ""}')
+        register_scale_pair('ratios_threeway', 'threeway_multi', settings, {
+            'design': 'three', 'data_source': 'ratios',
+            'value_cols': list(selected_ratios), 'source_cols': list(selected_ratios),
+            'factor_cols': [fa_col, fb_col, fc_col],
+            'factor_a_col': fa_col, 'factor_b_col': fb_col, 'factor_c_col': fc_col,
+            'factor_a_name': fa_name, 'factor_b_name': fb_name, 'factor_c_name': fc_name,
+            'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'ratios'),
+            'stats_source_log': _result_source_name(results, 'ratios', log=True),
+            'stats_columns': list(selected_ratios),
+            'ylabel': 'Ratio', 'ncols': 6, 'log_scale': log_scale,
+        })
         plt.close(fig)
 
-        fig_other = viz.plot_threeway_multi_panel(
-            data=combined, value_cols=selected_ratios,
-            factor_a_col=fa_col, factor_b_col=fb_col, factor_c_col=fc_col,
-            threeway_results=tw_stats_other, ncols=6,
-            factor_a_name=fa_name, factor_b_name=fb_name, factor_c_name=fc_name,
-            ylabel='Ratio', show_points=settings['show_points'],
-            plot_type=settings['plot_type'], log_scale=not log_scale
-        )
-        store_figure(fig_other, f'ratios_threeway{"_log" if not log_scale else ""}')
-        plt.close(fig_other)
 
         with st.expander("Interaction Plots"):
             fig_int = viz.plot_threeway_interaction_multi_panel(
@@ -1800,7 +2531,18 @@ def render_ratios_tab(processed, settings):
                 ylabel='Ratio'
             )
             st.pyplot(fig_int)
-            store_figure(fig_int, 'ratios_threeway_interaction')
+            register_figure_spec('ratios_threeway_interaction', 'threeway_interaction', settings, {
+                'design': 'three', 'data_source': 'ratios',
+                'value_cols': list(selected_ratios), 'source_cols': list(selected_ratios),
+                'factor_cols': [fa_col, fb_col, fc_col],
+                'factor_a_col': fa_col, 'factor_b_col': fb_col, 'factor_c_col': fc_col,
+                'factor_a_name': fa_name, 'factor_b_name': fb_name, 'factor_c_name': fc_name,
+                'group_col': group_col,
+                'stats_source_raw': _result_source_name(results, 'ratios'),
+                'stats_source_log': _result_source_name(results, 'ratios', log=True),
+                'stats_columns': list(selected_ratios),
+                'ylabel': 'Ratio', 'ncols': 6, 'log_scale': log_scale,
+            })
             plt.close(fig_int)
 
         with st.expander("Three-Way ANOVA Summary"):
@@ -1816,7 +2558,6 @@ def render_ratios_tab(processed, settings):
         tw_stats_log = {r: results.log_twoway_ratios.get(r) for r in selected_ratios
                        if r in results.log_twoway_ratios}
         tw_stats = tw_stats_log if log_scale else tw_stats_raw
-        tw_stats_other = tw_stats_raw if log_scale else tw_stats_log
 
         fig = viz.plot_twoway_multi_panel(
             data=combined, value_cols=selected_ratios,
@@ -1827,19 +2568,20 @@ def render_ratios_tab(processed, settings):
             plot_type=settings['plot_type'], log_scale=log_scale
         )
         st.pyplot(fig)
-        store_figure(fig, f'ratios_twoway{"_log" if log_scale else ""}')
+        register_scale_pair('ratios_twoway', 'twoway_multi', settings, {
+            'design': 'two', 'data_source': 'ratios',
+            'value_cols': list(selected_ratios), 'source_cols': list(selected_ratios),
+            'factor_cols': [fa_col, fb_col],
+            'factor_a_col': fa_col, 'factor_b_col': fb_col,
+            'factor_a_name': fa_name, 'factor_b_name': fb_name,
+            'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'ratios'),
+            'stats_source_log': _result_source_name(results, 'ratios', log=True),
+            'stats_columns': list(selected_ratios),
+            'ylabel': 'Ratio', 'ncols': 6, 'log_scale': log_scale,
+        })
         plt.close(fig)
 
-        fig_other = viz.plot_twoway_multi_panel(
-            data=combined, value_cols=selected_ratios,
-            factor_a_col=fa_col, factor_b_col=fb_col,
-            twoway_results=tw_stats_other, ncols=6,
-            factor_a_name=fa_name, factor_b_name=fb_name,
-            ylabel='Ratio', show_points=settings['show_points'],
-            plot_type=settings['plot_type'], log_scale=not log_scale
-        )
-        store_figure(fig_other, f'ratios_twoway{"_log" if not log_scale else ""}')
-        plt.close(fig_other)
 
         with st.expander("Interaction Plots"):
             fig_int = viz.plot_twoway_interaction_multi_panel(
@@ -1850,7 +2592,18 @@ def render_ratios_tab(processed, settings):
                 ylabel='Ratio'
             )
             st.pyplot(fig_int)
-            store_figure(fig_int, 'ratios_interaction')
+            register_figure_spec('ratios_interaction', 'twoway_interaction', settings, {
+                'design': 'two', 'data_source': 'ratios',
+                'value_cols': list(selected_ratios), 'source_cols': list(selected_ratios),
+                'factor_cols': [fa_col, fb_col],
+                'factor_a_col': fa_col, 'factor_b_col': fb_col,
+                'factor_a_name': fa_name, 'factor_b_name': fb_name,
+                'group_col': group_col,
+                'stats_source_raw': _result_source_name(results, 'ratios'),
+                'stats_source_log': _result_source_name(results, 'ratios', log=True),
+                'stats_columns': list(selected_ratios),
+                'ylabel': 'Ratio', 'ncols': 6, 'log_scale': log_scale,
+            })
             plt.close(fig_int)
 
         with st.expander("Two-Way ANOVA Summary"):
@@ -1861,7 +2614,6 @@ def render_ratios_tab(processed, settings):
         stats_dict_raw = {r: results.ratios_results.get(r) for r in selected_ratios if r in results.ratios_results}
         stats_dict_log = {r: results.log_ratios_results.get(r) for r in selected_ratios if r in results.log_ratios_results}
         stats_dict = stats_dict_log if log_scale else stats_dict_raw
-        stats_dict_other = stats_dict_raw if log_scale else stats_dict_log
 
         # Multi-panel figure
         fig = viz.plot_multi_panel_groups_with_stats(
@@ -1870,17 +2622,16 @@ def render_ratios_tab(processed, settings):
             show_points=settings['show_points'], ylabel='Ratio'
         )
         st.pyplot(fig)
-        store_figure(fig, f'ratios{"_log" if log_scale else ""}')
+        register_scale_pair('ratios', 'oneway_multi', settings, {
+            'design': 'one', 'data_source': 'ratios',
+            'value_cols': list(selected_ratios), 'source_cols': list(selected_ratios),
+            'factor_cols': [], 'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'ratios'),
+            'stats_source_log': _result_source_name(results, 'ratios', log=True),
+            'stats_columns': list(selected_ratios),
+            'ylabel': 'Ratio', 'ncols': 6, 'log_scale': log_scale,
+        })
         plt.close(fig)
-
-        # Generate other version for export
-        fig_other = viz.plot_multi_panel_groups_with_stats(
-            combined, selected_ratios, group_col, stats_dict_other,
-            ncols=6, plot_type=settings['plot_type'], log_scale=not log_scale,
-            show_points=settings['show_points'], ylabel='Ratio'
-        )
-        store_figure(fig_other, f'ratios{"_log" if not log_scale else ""}')
-        plt.close(fig_other)
 
         # Statistical summary
         with st.expander("📊 Statistical Summary"):
@@ -1993,7 +2744,17 @@ def render_hydrophobicity_tab(processed, settings):
             plot_type=settings['plot_type'], log_scale=False
         )
         st.pyplot(fig)
-        store_figure(fig, 'hydrophobicity_threeway')
+        register_figure_spec('hydrophobicity_threeway', 'threeway_multi', settings, {
+            'design': 'three', 'data_source': 'hydro',
+            'value_cols': list(hydro_cols), 'source_cols': list(hydro_cols),
+            'factor_cols': [fa_col, fb_col, fc_col],
+            'factor_a_col': fa_col, 'factor_b_col': fb_col, 'factor_c_col': fc_col,
+            'factor_a_name': fa_name, 'factor_b_name': fb_name, 'factor_c_name': fc_name,
+            'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'hydrophobicity'),
+            'stats_columns': list(hydro_cols),
+            'ylabel': 'HI Score', 'ncols': 2, 'log_scale': False,
+        })
         plt.close(fig)
 
         with st.expander("Three-Way ANOVA Summary"):
@@ -2017,7 +2778,17 @@ def render_hydrophobicity_tab(processed, settings):
             plot_type=settings['plot_type'], log_scale=False
         )
         st.pyplot(fig)
-        store_figure(fig, 'hydrophobicity_twoway')
+        register_figure_spec('hydrophobicity_twoway', 'twoway_multi', settings, {
+            'design': 'two', 'data_source': 'hydro',
+            'value_cols': list(hydro_cols), 'source_cols': list(hydro_cols),
+            'factor_cols': [fa_col, fb_col],
+            'factor_a_col': fa_col, 'factor_b_col': fb_col,
+            'factor_a_name': fa_name, 'factor_b_name': fb_name,
+            'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'hydrophobicity'),
+            'stats_columns': list(hydro_cols),
+            'ylabel': 'HI Score', 'ncols': 2, 'log_scale': False,
+        })
         plt.close(fig)
 
         with st.expander("Two-Way ANOVA Summary"):
@@ -2034,7 +2805,14 @@ def render_hydrophobicity_tab(processed, settings):
             show_points=settings['show_points'], ylabel='HI Score'
         )
         st.pyplot(fig)
-        store_figure(fig, 'hydrophobicity')
+        register_figure_spec('hydrophobicity', 'oneway_multi', settings, {
+            'design': 'one', 'data_source': 'hydro',
+            'value_cols': list(hydro_cols), 'source_cols': list(hydro_cols),
+            'factor_cols': [], 'group_col': group_col,
+            'stats_source_raw': _result_source_name(results, 'hydrophobicity'),
+            'stats_columns': list(hydro_cols),
+            'ylabel': 'HI Score', 'ncols': 2, 'log_scale': False,
+        })
         plt.close(fig)
 
         with st.expander("Statistical Summary"):
@@ -2291,81 +3069,121 @@ def render_statistics_tab(processed, settings):
 
 @st.fragment
 def render_export_tab(processed, settings):
-    """Export tab."""
+    """Export tab.
+
+    Workbooks and reports are generated by the download button's deferred
+    callable, so rendering the tab no longer builds every export on each rerun.
+    """
     st.markdown("### Export Results")
+    st.caption("Files are generated only when you click a download button.")
     results = st.session_state.analysis_results
     report_gen = st.session_state.report_generator
-    
+
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("#### Individual Downloads")
-    
-    # Get metadata columns (Sample_ID and Group)
+
+        # Get metadata columns (Sample_ID and Group)
         id_cols = []
         if processed.structure.sample_id_col and processed.structure.sample_id_col in processed.sample_data.columns:
             id_cols.append(processed.structure.sample_id_col)
         if processed.structure.group_col and processed.structure.group_col in processed.sample_data.columns:
             id_cols.append(processed.structure.group_col)
-    
+
         metadata = processed.sample_data[id_cols] if id_cols else pd.DataFrame(index=processed.sample_data.index)
-    
-        # Export each dataset with metadata
+
+        # Export each dataset with metadata. The closure builds one workbook only
+        # when its button is clicked, so no workbook bytes are retained here.
         for name, df in [("Concentrations", processed.concentrations),
-                     ("Totals", processed.totals),
-                     ("Ratios", processed.ratios),
-                     ("Percentages", processed.percentages)]:
-            export_df = pd.concat([metadata, df], axis=1)
+                         ("Totals", processed.totals),
+                         ("Ratios", processed.ratios),
+                         ("Percentages", processed.percentages)]:
+            def _build_workbook(df=df, metadata=metadata):
+                export_df = pd.concat([metadata, df], axis=1)
+                return df_to_excel_bytes(export_df)
+
             st.download_button(
                 f"📥 {name} (Excel)",
-                df_to_excel_bytes(export_df),
+                _build_workbook,
                 f"bile_acid_{name.lower()}.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key=f"download_{name.lower()}"
             )
-        
+
         # LOD-highlighted Excel export
         st.markdown("---")
-        lod_excel = create_full_data_excel_with_highlighting(processed, settings['lod_handling'])
         lod_label = {"half_lod": "LOD/2", "lod": "LOD value", "zero": "Zero", "drop": "NaN"}
         st.download_button(
             "📥 All Data (Excel) - LOD highlighted",
-            lod_excel,
+            lambda: create_full_data_excel_with_highlighting(processed, settings['lod_handling']),
             f"bile_acid_data_lod_highlighted_{datetime.now():%Y%m%d}.xlsx",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_lod_excel"
         )
         st.caption(f"Yellow cells = values replaced (below LOD → {lod_label[settings['lod_handling']]})")
-    
+
     with col2:
         st.markdown("#### Complete Reports")
         if report_gen:
-            buf = BytesIO()
-            report_gen.display_orders = report_display_orders(settings)
-            report_gen.save_excel_report(buf)
-            buf.seek(0)
-            st.download_button("📥 Statistical Report (Excel)", buf.getvalue(),
-                              f"statistical_report_{datetime.now():%Y%m%d}.xlsx",
-                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                              key="download_excel_report")
-        
-        # Generate ZIP on button click, then show download button
-        if st.button("📦 Generate Complete Package (ZIP)", key="generate_zip"):
-            with st.status("Generating export package...", expanded=True) as status:
-                st.write("Rendering all figure variations...")
-                all_figures = generate_all_export_figures(processed, results, settings)
-                combined_figures = {**st.session_state.figures, **all_figures}
-                st.write("Packaging ZIP archive...")
-                st.session_state.zip_data = create_results_zip(processed, results, combined_figures, report_gen, settings)
-                st.session_state.zip_figure_count = len(combined_figures)
-                status.update(label="Package ready!", state="complete", expanded=False)
+            def _build_report():
+                buf = BytesIO()
+                try:
+                    report_gen.display_orders = report_display_orders(settings)
+                    report_gen.save_excel_report(buf)
+                    return buf.getvalue()
+                finally:
+                    report_gen.analysis_sheets.clear()
 
-        if st.session_state.zip_data is not None:
-            st.download_button("📥 Download Complete Package (ZIP)", st.session_state.zip_data,
-                              f"bile_acid_analysis_{datetime.now():%Y%m%d_%H%M}.zip",
-                              "application/zip",
-                              key="download_zip")
-            st.caption(f"📊 Package includes {st.session_state.zip_figure_count} figures covering all analysis options")
-    
+            st.download_button("📥 Statistical Report (Excel)", _build_report,
+                               f"statistical_report_{datetime.now():%Y%m%d}.xlsx",
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               key="download_excel_report")
+
+        # Generate the ZIP on click and write it to disk; figures are consumed
+        # one at a time by iter_all_export_figures().
+        if st.button("📦 Generate Complete Package (ZIP)", key="generate_zip"):
+            clear_zip_package()
+            try:
+                with st.status("Generating export package...", expanded=True) as status:
+                    st.write("Rendering figures one at a time...")
+                    figure_errors = []
+                    zip_path, figure_count, errors = create_results_zip(
+                        processed,
+                        results,
+                        iter_export_figures(processed, results, settings, errors=figure_errors),
+                        report_gen,
+                        settings,
+                    )
+                    errors.extend(figure_errors)
+                    st.session_state.zip_path = zip_path
+                    st.session_state.zip_figure_count = figure_count
+                    if errors:
+                        status.update(label="Package ready with warnings", state="complete", expanded=True)
+                        for err in errors:
+                            st.warning(err)
+                    else:
+                        status.update(label="Package ready!", state="complete", expanded=False)
+            except Exception as exc:
+                st.error(f"Could not generate the export package: {exc}")
+
+        zip_path = st.session_state.get('zip_path')
+        if zip_path and Path(zip_path).exists():
+            def _read_zip():
+                try:
+                    return Path(zip_path).read_bytes()
+                except OSError:
+                    return b''
+
+            st.download_button("📥 Download Complete Package (ZIP)", _read_zip,
+                               f"bile_acid_analysis_{datetime.now():%Y%m%d_%H%M}.zip",
+                               "application/zip",
+                               key="download_zip")
+            st.caption(f"📊 Package includes {st.session_state.zip_figure_count} figures, "
+                       "including any figures viewed in the tabs with their saved style/settings.")
+            if st.button("Clear generated package", key="clear_zip"):
+                clear_zip_package()
+                st.rerun()
+
     st.markdown("---")
 
 
@@ -2439,6 +3257,9 @@ def render_heatmap_tab(processed, settings):
         with st.spinner("Generating heatmap..."):
             data = processed.sample_data[processed.sample_data[group_col].notna()].copy()
             data = data[data[group_col].astype(str).str.lower() != 'nan']
+            if len(data) > 150:
+                st.caption(f"Large cohort ({len(data)} samples): the heatmap is capped at "
+                           "24 × 24 in to keep memory bounded.")
 
             # Build factor_cols: use detected factors, fallback to group_col
             if processed.structure.factors:
@@ -2457,8 +3278,15 @@ def render_heatmap_tab(processed, settings):
                 sample_id_col=processed.structure.sample_id_col,
                 factor_cols=fc,
             )
-            st.session_state['heatmap_fig'] = fig_to_bytes(fig)
-            store_figure(fig, 'faceted_heatmap')
+            st.session_state['heatmap_fig'] = fig_to_bytes(fig, dpi=100)
+            register_figure_spec('faceted_heatmap', 'heatmap', settings, {
+                'group_col': group_col,
+                'selected_categories': selected_cats,
+                'normalization': normalization,
+                'cmap': cmap,
+                'sample_id_col': processed.structure.sample_id_col,
+                'factor_cols': dict(fc),
+            })
             plt.close(fig)
 
     # Display cached heatmap
@@ -2475,24 +3303,21 @@ def main():
     uploaded = st.file_uploader("Upload Excel/ODS file", ['xlsx', 'xls', 'ods'])
     
     if uploaded:
-        # Check if file changed
-        file_changed = st.session_state.last_file != uploaded.name
+        # Detect replacements even when the new file has the same name.
+        uploaded_id = getattr(uploaded, 'file_id', None) or f"{uploaded.name}:{uploaded.size}"
+        file_changed = st.session_state.get('uploaded_file_id') != uploaded_id
         if file_changed:
-            st.session_state.stats_computed = False
-            st.session_state.stats_sections_done = set()
-            st.session_state.figures = {}
-            st.session_state.report_generator = None
-            st.session_state.zip_data = None
-            st.session_state.zip_figure_count = 0
-            st.session_state.last_file = uploaded.name
-            st.session_state.last_settings = None  # Reset settings tracking for new file
-            st.session_state.level_orders = {}  # Levels differ between files
-            st.session_state.selected_sheet = None  # Reset sheet selection for new file
+            reset_analysis_state(clear_upload=True)
+            st.session_state.uploaded_file_id = uploaded_id
+            st.session_state.last_settings = get_data_affecting_settings(settings)
 
-        # Write temp file for sheet inspection and processing
-        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded.name).suffix) as tmp:
-            tmp.write(uploaded.getvalue())
-            tmp_path = tmp.name
+        # Keep one stable temp file per upload instead of rewriting it every rerun.
+        tmp_path = st.session_state.get('uploaded_tmp_path')
+        if not tmp_path or not Path(tmp_path).exists():
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded.name).suffix) as tmp:
+                tmp.write(uploaded.getvalue())
+                tmp_path = tmp.name
+            st.session_state.uploaded_tmp_path = tmp_path
 
         # Sheet selection dropdown
         processor = BileAcidDataProcessor(
@@ -2524,14 +3349,9 @@ def main():
         # Detect sheet change
         sheet_changed = (st.session_state.selected_sheet != selected_sheet)
         if sheet_changed:
+            reset_analysis_state(clear_upload=False)
             st.session_state.selected_sheet = selected_sheet
-            st.session_state.level_orders = {}  # Levels differ between sheets
-            st.session_state.stats_computed = False
-            st.session_state.stats_sections_done = set()
-            st.session_state.report_generator = None
-            st.session_state.figures = {}
-            st.session_state.zip_data = None
-            st.session_state.zip_figure_count = 0
+            st.session_state.last_settings = get_data_affecting_settings(settings)
 
         # Check if settings changed (LOD handling, alpha, etc.)
         settings_changed = check_settings_changed(settings)
@@ -2569,12 +3389,27 @@ def main():
             hi_calc = HydrophobicityCalculator(pH=tissue_ph)
             hi_pool = hi_calc.calculate_pool_hi(processed.concentrations, processed.structure.bile_acid_cols)
             hi_load = hi_calc.calculate_hydrophobic_load(processed.concentrations, processed.structure.bile_acid_cols)
-            st.session_state.hydrophobicity = pd.DataFrame({"HI_pool": hi_pool, "hydrophobic_load": hi_load})
+            hydro_df = pd.DataFrame({"HI_pool": hi_pool, "hydrophobic_load": hi_load})
+            st.session_state.hydrophobicity = hydro_df
             st.session_state.hydro_tissue = settings['tissue']
             st.session_state.stats_sections_done.discard('hydrophobicity')
             st.session_state.stats_computed = False
-            st.session_state.report_generator = None
-            st.session_state.zip_data = None
+            # Keep the cached generator and every other section's results.  Only
+            # the hydrophobicity inputs/results changed, so the next Hydro tab
+            # visit reruns that section in place instead of replacing the whole
+            # result object (which would silently drop the other sections).
+            report_gen = st.session_state.report_generator
+            if report_gen is not None:
+                report_gen.hydrophobicity = hydro_df
+                report_gen.hydro_ph = tissue_ph
+                report_gen.hydro_tissue = settings['tissue']
+                report_gen.results.hydrophobicity_results.clear()
+                report_gen.results.twoway_hydrophobicity.clear()
+                report_gen.results.threeway_hydrophobicity.clear()
+                report_gen.analysis_sheets.clear()
+                st.session_state.analysis_results = report_gen.results
+            # Only hydrophobicity recipes depend on the tissue pH.
+            clear_figure_specs(lambda name: name.startswith('hydrophobicity'))
 
         quality = validate_data_quality(processed)
         c1, c2, c3 = st.columns(3)
@@ -2623,73 +3458,61 @@ def main():
                     # Highlight high replacement rates
                     st.dataframe(lod_df, width="stretch", hide_index=True)
         
-        n_factors = getattr(processed.structure, 'n_factors', 0)
-        is_threeway = n_factors >= 3
+        # One unified selector for one-, two-, and three-way designs. Only the
+        # active section is rendered/computed; st.tabs rendered every section on
+        # every rerun and was the main cause of Cloud OOM failures.
+        tab_options = ["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
+                       "🧪 Hydrophobicity", "🗺️ Heatmap", "📊 Statistics", "💾 Export"]
+        active_tab = st.segmented_control("Section", tab_options, default="📈 Concentrations")
+        if not active_tab:
+            active_tab = tab_options[0]
 
-        if is_threeway:
-            # Three-way: use a selector so only ONE section computes at a time
-            # (st.tabs renders all content on every run, which OOMs on Cloud)
-            tab_options = ["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
-                           "🧪 Hydrophobicity", "🗺️ Heatmap", "📊 Statistics", "💾 Export"]
-            active_tab = st.segmented_control("Section", tab_options, default="📈 Concentrations")
-
-            # Map tab to stats section(s) needed
-            tab_sections = {
-                "📈 Concentrations": ['individual_ba'],
-                "📊 Totals": ['totals'],
-                "📉 Percentages": ['percentages'],
-                "🔢 Ratios": ['ratios'],
-                "🧪 Hydrophobicity": ['hydrophobicity'],
-                "🗺️ Heatmap": [],
-                "📊 Statistics": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories', 'hydrophobicity'],
-                "💾 Export": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories', 'hydrophobicity'],
-            }
-            needed = tab_sections.get(active_tab, [])
-            missing = [s for s in needed if s not in st.session_state.stats_sections_done]
-            if missing:
-                # Free memory from previous section before computing new one
-                plt.close('all')
-                gc.collect()
-                label = f"Computing {', '.join(missing)} statistics..."
-                with st.status(label, expanded=False) as status:
-                    for sec in missing:
-                        ensure_section_computed(processed, settings, sec)
-                    status.update(label="Statistics ready", state="complete")
-
-            if active_tab == "📈 Concentrations":
-                render_concentrations_tab(processed, settings)
-            elif active_tab == "📊 Totals":
-                render_totals_tab(processed, settings)
-            elif active_tab == "📉 Percentages":
-                render_percentages_tab(processed, settings)
-            elif active_tab == "🔢 Ratios":
-                render_ratios_tab(processed, settings)
-            elif active_tab == "🧪 Hydrophobicity":
-                render_hydrophobicity_tab(processed, settings)
-            elif active_tab == "🗺️ Heatmap":
-                render_heatmap_tab(processed, settings)
-            elif active_tab == "📊 Statistics":
-                render_statistics_tab(processed, settings)
-            elif active_tab == "💾 Export":
-                render_export_tab(processed, settings)
-        else:
-            # One-way / two-way: compute all stats at once (fits in memory), use tabs
-            with st.status("Computing statistics...", expanded=False) as status:
-                compute_all_statistics(processed, settings)
+        # Map each view to the statistics sections it needs.
+        tab_sections = {
+            "📈 Concentrations": ['individual_ba'],
+            "📊 Totals": ['totals'],
+            "📉 Percentages": ['percentages'],
+            "🔢 Ratios": ['ratios'],
+            "🧪 Hydrophobicity": ['hydrophobicity'],
+            "🗺️ Heatmap": [],
+            "📊 Statistics": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories', 'hydrophobicity'],
+            "💾 Export": ['individual_ba', 'totals', 'ratios', 'percentages', 'categories', 'hydrophobicity'],
+        }
+        needed = tab_sections.get(active_tab, [])
+        missing = [s for s in needed if s not in st.session_state.stats_sections_done]
+        if missing:
+            # Drop any stale figures before computing the next section.
+            plt.close('all')
+            gc.collect()
+            label = f"Computing {', '.join(missing)} statistics..."
+            with st.status(label, expanded=False) as status:
+                for sec in missing:
+                    ensure_section_computed(processed, settings, sec)
                 status.update(label="Statistics ready", state="complete")
 
-            tabs = st.tabs(["📈 Concentrations", "📊 Totals", "📉 Percentages", "🔢 Ratios",
-                            "🧪 Hydrophobicity", "🗺️ Heatmap", "📊 Statistics", "💾 Export"])
-            with tabs[0]: render_concentrations_tab(processed, settings)
-            with tabs[1]: render_totals_tab(processed, settings)
-            with tabs[2]: render_percentages_tab(processed, settings)
-            with tabs[3]: render_ratios_tab(processed, settings)
-            with tabs[4]: render_hydrophobicity_tab(processed, settings)
-            with tabs[5]: render_heatmap_tab(processed, settings)
-            with tabs[6]: render_statistics_tab(processed, settings)
-            with tabs[7]: render_export_tab(processed, settings)
+        if active_tab == "📈 Concentrations":
+            render_concentrations_tab(processed, settings)
+        elif active_tab == "📊 Totals":
+            render_totals_tab(processed, settings)
+        elif active_tab == "📉 Percentages":
+            render_percentages_tab(processed, settings)
+        elif active_tab == "🔢 Ratios":
+            render_ratios_tab(processed, settings)
+        elif active_tab == "🧪 Hydrophobicity":
+            render_hydrophobicity_tab(processed, settings)
+        elif active_tab == "🗺️ Heatmap":
+            render_heatmap_tab(processed, settings)
+        elif active_tab == "📊 Statistics":
+            render_statistics_tab(processed, settings)
+        elif active_tab == "💾 Export":
+            render_export_tab(processed, settings)
     
     else:
+        # Removing the uploader releases the analysis and its temp file.  This
+        # keeps abandoned sessions from retaining processed data indefinitely.
+        if st.session_state.get('processed_data') is not None or st.session_state.get('uploaded_tmp_path'):
+            reset_analysis_state(clear_upload=True)
+
         # Show expected input format when no data is loaded
         st.markdown("---")
         st.markdown("## 📋 Expected Input Format")

@@ -58,7 +58,6 @@ class DataStructureInfo:
 class ProcessedData:
     """Container for processed bile acid data."""
     # Core data
-    raw_data: pd.DataFrame
     sample_data: pd.DataFrame  # Samples only, no standards
     
     # Structure info
@@ -69,9 +68,6 @@ class ProcessedData:
     percentages: pd.DataFrame     # % of total for each BA
     totals: pd.DataFrame          # Group totals (conjugated, primary, etc.)
     ratios: pd.DataFrame          # Clinical ratios
-    
-    # Summary statistics by group
-    group_summaries: Optional[Dict[str, pd.DataFrame]] = None
 
 
 class BileAcidDataProcessor:
@@ -1047,28 +1043,13 @@ class BileAcidDataProcessor:
         totals = self.calculate_totals(sample_df, ba_cols)
         ratios = self.calculate_ratios(sample_df, ba_cols, lod_value=self.lod_value)
         
-        # Group summaries if group column exists
-        group_summaries = None
-        if structure.group_col and structure.group_col in sample_df.columns:
-            all_value_cols = ba_cols + list(totals.columns) + list(ratios.columns)
-            
-            # Merge for summary calculation
-            full_df = pd.concat([sample_df, totals, ratios], axis=1)
-            group_summaries = self.calculate_group_summaries(
-                full_df, 
-                structure.group_col,
-                all_value_cols
-            )
-        
         return ProcessedData(
-            raw_data=raw_df,
             sample_data=sample_df,
             structure=structure,
             concentrations=concentrations,
             percentages=percentages,
             totals=totals,
             ratios=ratios,
-            group_summaries=group_summaries
         )
     
     def get_analysis_dataframe(

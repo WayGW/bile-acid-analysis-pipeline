@@ -437,8 +437,9 @@ class BileAcidVisualizer:
             col_width = 4
             row_height = 4.5 if plot_type == "box" else 5
             figsize = (ncols * col_width, nrows * row_height)
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 28.0))
 
-        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharey=sharey)
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharey=sharey, dpi=100)
         axes = axes.flatten() if n_plots > 1 else [axes]
 
         # Get valid groups only (no NaN)
@@ -536,8 +537,9 @@ class BileAcidVisualizer:
             col_width = 4
             row_height = 4.5 if plot_type == "box" else 5
             figsize = (ncols * col_width, nrows * row_height)
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 28.0))
 
-        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharey=sharey)
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, sharey=sharey, dpi=100)
         axes = axes.flatten() if n_plots > 1 else [axes]
         
         # Get valid groups only
@@ -849,8 +851,9 @@ class BileAcidVisualizer:
         # Calculate figure size
         if figsize is None:
             figsize = (5 * n_groups, 5)
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 24.0))
         
-        fig, axes = plt.subplots(1, n_groups, figsize=figsize)
+        fig, axes = plt.subplots(1, n_groups, figsize=figsize, dpi=100)
         if n_groups == 1:
             axes = [axes]
         
@@ -999,12 +1002,15 @@ class BileAcidVisualizer:
             ax.text(0.5, 0.5, 'No category data available', ha='center', va='center')
             return fig
 
-        # Layout: rows = groups, cols = categories
+        # Layout: rows = groups, cols = categories.  Cap the canvas: an 8 x 8
+        # grid at the old 5 x 5.5 in, 150 dpi sizing created a ~40 x 44 in
+        # (158 MP) image that could exhaust Cloud memory on its own.
         if figsize is None:
             figsize = (5 * n_categories, 5.5 * n_groups)
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 24.0))
 
         fig, axes = plt.subplots(n_groups, n_categories, figsize=figsize, squeeze=False,
-                                 dpi=150)
+                                 dpi=100)
         fig.subplots_adjust(hspace=0.4, wspace=0.3)
 
         # Color palette for individual bile acids
@@ -1156,8 +1162,9 @@ class BileAcidVisualizer:
         # group count so bars stay thick (in absolute inches) as n_groups grows
         if figsize is None:
             figsize = (12, max(6, len(top_bas) * n_groups * 0.2))
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 28.0))
 
-        fig, ax = plt.subplots(figsize=figsize)
+        fig, ax = plt.subplots(figsize=figsize, dpi=100)
 
         # Set up positions
         y_pos = np.arange(len(top_bas))
@@ -1260,8 +1267,9 @@ class BileAcidVisualizer:
         # Calculate figure size
         if figsize is None:
             figsize = (12, max(4, n_groups * 1.2))
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 28.0))
         
-        fig, ax = plt.subplots(figsize=figsize)
+        fig, ax = plt.subplots(figsize=figsize, dpi=100)
         
         # Colors
         colors = sns.color_palette("tab20", len(plot_bas))
@@ -1676,8 +1684,9 @@ class BileAcidVisualizer:
 
         if figsize is None:
             figsize = (ncols * 4.5, nrows * 4.5)
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 28.0))
 
-        fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, dpi=100)
         if n_plots == 1:
             axes = np.array([axes])
         axes = axes.flatten()
@@ -1730,8 +1739,9 @@ class BileAcidVisualizer:
 
         if figsize is None:
             figsize = (ncols * 4.5, nrows * 4)
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 28.0))
 
-        fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize, dpi=100)
         if n_plots == 1:
             axes = np.array([axes])
         axes = axes.flatten()
@@ -1917,8 +1927,12 @@ class BileAcidVisualizer:
         usable_height_frac = 0.82  # top - bottom
         fig_width = (total_width_units * cell_size) / usable_width_frac
         fig_height = (n_samples * cell_size) / usable_height_frac
+        # Bound the raster size for large cohorts; the app shows a warning so
+        # users know the on-screen heatmap is downscaled.
+        fig_width = min(fig_width, 24.0)
+        fig_height = min(fig_height, 24.0)
 
-        fig = plt.figure(figsize=(fig_width, fig_height), dpi=150)
+        fig = plt.figure(figsize=(fig_width, fig_height), dpi=100)
         gs = gridspec.GridSpec(1, len(width_ratios), width_ratios=width_ratios, wspace=0.08)
 
         # Determine color range
@@ -2336,13 +2350,14 @@ class BileAcidVisualizer:
         if figsize is None:
             plot_width = max(5, 4 * n_c) + (3.2 if has_results else 0)
             figsize = (plot_width, max(4, 3.5 * n_analytes))
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 28.0))
 
         if has_results:
             fig, axes = plt.subplots(n_analytes, total_cols, figsize=figsize,
                                      gridspec_kw={'width_ratios': [1]*n_c + [0.65]},
-                                     squeeze=False)
+                                     squeeze=False, dpi=100)
         else:
-            fig, axes = plt.subplots(n_analytes, n_c, figsize=figsize, squeeze=False)
+            fig, axes = plt.subplots(n_analytes, n_c, figsize=figsize, squeeze=False, dpi=100)
 
         # Share y-axis within each row (only among plot columns)
         for row_idx in range(n_analytes):
@@ -2489,8 +2504,9 @@ class BileAcidVisualizer:
 
         if figsize is None:
             figsize = (ncols * 5.5, nrows * 4.5)
+        figsize = (min(figsize[0], 24.0), min(figsize[1], 28.0))
 
-        fig = plt.figure(figsize=figsize)
+        fig = plt.figure(figsize=figsize, dpi=100)
         gs_outer = fig.add_gridspec(nrows, ncols, hspace=0.55, wspace=0.35)
 
         fa_name = factor_a_name or factor_a_col
