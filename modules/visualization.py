@@ -25,6 +25,80 @@ import warnings
 
 from modules.statistical_tests import effect_pvalue
 
+# Corrected p-values are Benjamini-Hochberg q-values in the current pipeline.
+# Keep the method explicit so the figure annotation cannot be mistaken for an
+# unadjusted or differently corrected p-value.
+Q_BH_LABEL = "q(BH)"
+Q_BH_NOTE = (
+    "q(BH): Benjamini-Hochberg FDR-adjusted p, computed within each "
+    "section/scale and effect family across all tested endpoints."
+)
+Q_BH_NOTE_SHORT = (
+    "q(BH): Benjamini-Hochberg FDR-adjusted p within each effect family."
+)
+
+_TWOWAY_Q_ATTRS = (
+    "factor_a_qvalue",
+    "factor_b_qvalue",
+    "interaction_qvalue",
+)
+_THREEWAY_Q_ATTRS = (
+    "factor_a_qvalue",
+    "factor_b_qvalue",
+    "factor_c_qvalue",
+    "interaction_ab_qvalue",
+    "interaction_ac_qvalue",
+    "interaction_bc_qvalue",
+    "interaction_abc_qvalue",
+)
+
+
+def _is_finite_qvalue(value) -> bool:
+    """Return True when *value* is a finite q-value."""
+    return value is not None and bool(np.isfinite(value))
+
+
+def _format_q_bh(q, decimals: int = 3) -> Optional[str]:
+    """Format a BH q-value with the correction method made explicit."""
+    if not _is_finite_qvalue(q):
+        return None
+    if q < 0.001:
+        return f"{Q_BH_LABEL}<.001"
+    return f"{Q_BH_LABEL}={q:.{decimals}f}"
+
+
+def _unwrap_factorial_result(result):
+    """Return the bare two-/three-way result from its wrapper, if present."""
+    for attr in ("twoway_result", "threeway_result"):
+        if hasattr(result, attr):
+            return getattr(result, attr)
+    return result
+
+
+def _has_finite_qvalue(obj, q_attrs) -> bool:
+    """Return True when any named q-value attribute is finite."""
+    return any(_is_finite_qvalue(getattr(obj, attr, None)) for attr in q_attrs)
+
+
+def _results_have_qvalues(results, q_attrs) -> bool:
+    """Return True when any factorial result carries a finite q-value."""
+    if not results:
+        return False
+    return any(
+        result is not None
+        and _has_finite_qvalue(_unwrap_factorial_result(result), q_attrs)
+        for result in results.values()
+    )
+
+
+def _add_q_bh_footnote(fig) -> None:
+    """Add the shared q(BH) definition to a multi-panel figure."""
+    fig.text(
+        0.01, 0.005, Q_BH_NOTE, fontsize=6.5, color="#495057",
+        ha="left", va="bottom",
+    )
+
+
 # Set publication-quality defaults
 plt.rcParams.update({
     'font.family': 'sans-serif',
@@ -625,7 +699,8 @@ class BileAcidVisualizer:
                 # Add p/q value to title (q drives significance when FDR is on)
                 p = result.main_test.pvalue
                 q = result.main_test.qvalue
-                label = f"q={q:.3f}" if q is not None and np.isfinite(q) else f"p={p:.3f}"
+                q_label = _format_q_bh(q, decimals=3)
+                label = q_label if q_label is not None else f"p={p:.3f}"
                 sig_marker = '*' if result.main_test.significant else ''
                 ax.set_title(f"{col} ({label}){sig_marker}", fontsize=10)
             else:
@@ -638,7 +713,18 @@ class BileAcidVisualizer:
         for i in range(n_plots, len(axes)):
             axes[i].set_visible(False)
 
-        fig.subplots_adjust(hspace=0.45, wspace=0.35)
+        has_q = any(
+            result is not None
+            and getattr(result, "main_test", None) is not None
+            and _is_finite_qvalue(result.main_test.qvalue)
+            for result in (stats_results or {}).values()
+        )
+        if has_q:
+            bottom = min(0.15, max(0.06, 0.65 / fig.get_figheight()))
+            fig.subplots_adjust(hspace=0.45, wspace=0.35, bottom=bottom)
+            _add_q_bh_footnote(fig)
+        else:
+            fig.subplots_adjust(hspace=0.45, wspace=0.35)
         return fig
 
     def _get_significant_pairs(self, result, max_pairs: int = 3) -> List[Tuple[str, str, str]]:
@@ -804,8 +890,8 @@ class BileAcidVisualizer:
             test_name = result.main_test.test_type.value
             p_val = result.main_test.pvalue
             q_val = result.main_test.qvalue
-            label_val = (f"q={q_val:.4f}" if q_val is not None and np.isfinite(q_val)
-                         else f"p={p_val:.4f}")
+            label_val = (_format_q_bh(q_val, decimals=4)
+                         or f"p={p_val:.4f}")
             sig_marker = "✓" if result.main_test.significant else ""
             stats_text_parts.append(
                 f"{label}: {test_name} {label_val} {sig_marker}"
@@ -1477,8 +1563,9 @@ class BileAcidVisualizer:
                 decision = effect_pvalue(tw, p_attr, q_attr)
                 label = _fmt_p(p)
                 if q is not None and np.isfinite(q):
-                    q_label = 'q<.001' if q < 0.001 else f"q={q:.3f}"
-                    label = f"{label}, {q_label}"
+                    q_label = _format_q_bh(q, decimals=3)
+                    if q_label:
+                        label = f"{label}, {q_label}"
                 return f"{label} {_stars(decision)}"
 
             effect_specs = (
@@ -1523,8 +1610,9 @@ class BileAcidVisualizer:
             )
             sig_marker = '*' if (decision is not None and np.isfinite(decision)
                                  and decision < twoway_result.alpha) else ''
-            if q_int is not None and np.isfinite(q_int):
-                p_str = f"q={q_int:.3f}"
+            q_label = _format_q_bh(q_int, decimals=3)
+            if q_label is not None:
+                p_str = q_label
             elif p_int is None or (isinstance(p_int, float) and math.isnan(p_int)):
                 p_str = 'N/A'
             else:
@@ -1710,8 +1798,9 @@ class BileAcidVisualizer:
             )
             sig = ("SIGNIFICANT" if decision is not None
                    and np.isfinite(decision) and decision < twoway_result.alpha else "n.s.")
-            if q_int is not None and np.isfinite(q_int):
-                p_str = f"q={q_int:.3f}"
+            q_label = _format_q_bh(q_int, decimals=3)
+            if q_label is not None:
+                p_str = q_label
             elif p_int is None or (isinstance(p_int, float) and math.isnan(p_int)):
                 p_str = 'N/A'
             else:
@@ -1780,7 +1869,12 @@ class BileAcidVisualizer:
         for i in range(n_plots, len(axes)):
             axes[i].set_visible(False)
 
-        plt.tight_layout()
+        has_q = _results_have_qvalues(twoway_results, _TWOWAY_Q_ATTRS)
+        if has_q:
+            plt.tight_layout(rect=(0, 0.04, 1, 1))
+            _add_q_bh_footnote(fig)
+        else:
+            plt.tight_layout()
         return fig
 
     def plot_twoway_interaction_multi_panel(
@@ -1833,7 +1927,12 @@ class BileAcidVisualizer:
         for i in range(n_plots, len(axes)):
             axes[i].set_visible(False)
 
-        plt.tight_layout()
+        has_q = _results_have_qvalues(twoway_results, _TWOWAY_Q_ATTRS)
+        if has_q:
+            plt.tight_layout(rect=(0, 0.04, 1, 1))
+            _add_q_bh_footnote(fig)
+        else:
+            plt.tight_layout()
         return fig
 
     def plot_faceted_heatmap(
@@ -2275,8 +2374,9 @@ class BileAcidVisualizer:
                 decision = effect_pvalue(tw, p_attr, q_attr)
                 label = _fmt_p(p)
                 if q is not None and np.isfinite(q):
-                    q_label = 'q<.001' if q < 0.001 else f"q={q:.3f}"
-                    label = f"{label}, {q_label}"
+                    q_label = _format_q_bh(q, decimals=3)
+                    if q_label:
+                        label = f"{label}, {q_label}"
                 return f"{label} {_stars(decision)}"
 
             effect_specs = (
@@ -2304,6 +2404,8 @@ class BileAcidVisualizer:
                 f"3-way:  {tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name}: "
                 f"{_fmt_effect('interaction_abc_pvalue', 'interaction_abc_qvalue')}"
             )
+            if _has_finite_qvalue(tw, _THREEWAY_Q_ATTRS):
+                anova_text = f"{anova_text}\n{Q_BH_NOTE_SHORT}"
             any_sig = any(
                 _is_significant(p_attr, q_attr)
                 for p_attr, q_attr in effect_specs
@@ -2443,6 +2545,7 @@ class BileAcidVisualizer:
         n_analytes = len(value_cols)
 
         has_results = threeway_results is not None and len(threeway_results) > 0
+        has_q = _results_have_qvalues(threeway_results, _THREEWAY_Q_ATTRS)
         total_cols = n_c + (1 if has_results else 0)
 
         if figsize is None:
@@ -2570,8 +2673,9 @@ class BileAcidVisualizer:
                         sig = _stars(decision, alpha)
                         stat_str = _fmt_p(p_val)
                         if q_val is not None and np.isfinite(q_val):
-                            q_str = 'q<.001' if q_val < 0.001 else f'q={q_val:.3f}'
-                            stat_str = f'{stat_str}, {q_str}'
+                            q_str = _format_q_bh(q_val, decimals=3)
+                            if q_str:
+                                stat_str = f'{stat_str}, {q_str}'
                         lines.append(f'{name}: {stat_str} {sig}')
 
                     def _is_significant(p_attr, q_attr):
@@ -2591,7 +2695,10 @@ class BileAcidVisualizer:
                                 bbox=dict(boxstyle='round,pad=0.4', facecolor=bg_color, alpha=0.9,
                                           edgecolor='#dee2e6'))
 
-        plt.tight_layout()
+        if has_q:
+            plt.tight_layout(rect=(0, 0.04, 1, 1))
+        else:
+            plt.tight_layout()
 
         # Single legend at top-right, placed after tight_layout so it isn't displaced
         handles, labels = axes[0, 0].get_legend_handles_labels()
@@ -2599,6 +2706,9 @@ class BileAcidVisualizer:
             fig.legend(handles, labels, title=fb_name, loc='upper right',
                       fontsize=7, title_fontsize=8, framealpha=0.9,
                       bbox_to_anchor=(0.98, 0.99))
+
+        if has_q:
+            _add_q_bh_footnote(fig)
 
         return fig
 

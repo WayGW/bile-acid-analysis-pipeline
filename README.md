@@ -11,7 +11,7 @@ A comprehensive, user-friendly pipeline for analyzing LC-MS bile acid data with 
 - **Automatic data structure detection** — recognizes 44 bile acid species from LC-MS output and detects the sample ID, group, and study factors
 - **One-, two-, and three-way designs** — group comparisons, factorial ANOVA, and interaction plots
 - **Assumption-aware statistics** — checks normality and homoscedasticity before selecting parametric or non-parametric tests
-- **Cross-analyte FDR control** — Benjamini-Hochberg q-values are computed by default within each analysis section and scale; q-significant omnibus tests gate post-hoc comparisons
+- **Cross-analyte FDR control** — Benjamini-Hochberg q(BH) values are computed by default within each analysis section and scale; q(BH) significance gates post-hoc comparisons
 - **LOD-aware aggregate testing** — totals are screened by their LOD-bound replacement burden, while `total_all` is always retained with a warning
 - **Comprehensive calculations** — group totals, pool percentages, and clinical ratios
 - **User-defined group order** — control the display order used in figures, reports, and exports without changing statistics
@@ -133,8 +133,11 @@ Two-way and three-way designs use factorial ANOVA with interaction terms and fac
 Benjamini-Hochberg FDR correction is enabled by default for primary (omnibus) tests:
 
 - Families are separate for each analysis section, raw vs log10 scale, and factorial effect.
-- q-values control which omnibus results are declared significant.
-- Post-hoc pairwise testing only runs for q-significant results.
+- Corrected values are labeled **q(BH)** to identify both the quantity (an FDR-adjusted p-value) and the correction method (Benjamini-Hochberg). `q(BH)` is the BH-adjusted p-value; it is not a raw p-value.
+- `q(BH)` values are adjusted across all tested endpoints in the relevant family, including endpoints that may not appear in a selected figure subset.
+- BH is a step-up procedure, so different raw p-values can legitimately share the same `q(BH)` value when they fall on the same adjustment plateau.
+- `q(BH)` values control which omnibus results are declared significant.
+- Post-hoc pairwise testing only runs for results that are significant after q(BH) correction.
 - Pairwise post-hoc comparisons remain BH-adjusted within each endpoint (analyte, total, ratio, percentage, or hydrophobicity metric).
 
 The FDR setting can be turned off in the sidebar to use unadjusted p-values.
@@ -179,13 +182,13 @@ where `O` is the sum of observed (non-below-LOD) contributions and `R` is the su
 
 ## What's New in 4.7.0
 
-- Cross-analyte Benjamini-Hochberg FDR is on by default; q-values now determine omnibus significance and gate post-hoc testing
+- Cross-analyte Benjamini-Hochberg FDR is on by default; q(BH) values now determine omnibus significance and gate post-hoc testing
 - Aggregate totals are screened using their LOD-bound replacement burden instead of the proportion of constituent BAs excluded
 - `total_all` is always tested and can only receive a warning; other aggregates are excluded at a separate 5% burden threshold
 - Per-sample and per-group aggregate burdens are written to the `Aggregate_LOD_Burden` report worksheet
-- Category sheets reuse their corresponding totals statistics, so p- and q-values are identical without duplicate testing
+- Category sheets reuse their corresponding totals statistics, so p- and q(BH) values are identical without duplicate testing
 - Two-way ART main effects now use the full factorial model on aligned ranks, fixing the residual degrees of freedom and F statistics
-- Excel reports, in-app summaries, APA text, and figures display raw p-values alongside corrected q-values consistently, with q-based significance coloring in factorial figure annotations; LOD warnings remain visible throughout
+- Excel reports, in-app summaries, APA text, and figures display raw p-values alongside q(BH) values consistently, with q(BH)-based significance coloring in factorial figure annotations and a q(BH) definition in multi-panel figures; LOD warnings remain visible throughout
 - Statistics remain available for raw and log10 scales, with separate FDR families for each
 
 The lazy-section rendering, bounded-memory exports, and figure-recipe improvements from 4.6.2 remain in place.

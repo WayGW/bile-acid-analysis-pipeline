@@ -2843,7 +2843,7 @@ def format_twoway_apa(result: FullTwoWayAnalysisResult) -> str:
         sig = "significant" if decision_p < tw.alpha else "not significant"
         p_str = f"p < .001" if p_val < 0.001 else f"p = {p_val:.3f}"
         if q_val is not None and np.isfinite(q_val):
-            p_str += ", q < .001" if q_val < 0.001 else f", q = {q_val:.3f}"
+            p_str += ", q(BH) < .001" if q_val < 0.001 else f", q(BH) = {q_val:.3f}"
         eta_str = f", partial η² = {eta:.2f}" if eta and not np.isnan(eta) else ""
 
         df1 = int(df_tup[0]) if not np.isnan(df_tup[0]) else '?'
@@ -2872,8 +2872,8 @@ def format_twoway_apa(result: FullTwoWayAnalysisResult) -> str:
     int_sig = "significant" if decision_p < tw.alpha else "not significant"
     int_p = f"p < .001" if tw.interaction_pvalue < 0.001 else f"p = {tw.interaction_pvalue:.3f}"
     if tw.interaction_qvalue is not None and np.isfinite(tw.interaction_qvalue):
-        int_p += (", q < .001" if tw.interaction_qvalue < 0.001
-                  else f", q = {tw.interaction_qvalue:.3f}")
+        int_p += (", q(BH) < .001" if tw.interaction_qvalue < 0.001
+                  else f", q(BH) = {tw.interaction_qvalue:.3f}")
     int_eta = f", partial η² = {eta_int:.2f}" if eta_int and not np.isnan(eta_int) else ""
     df1_int = int(tw.interaction_df[0]) if not np.isnan(tw.interaction_df[0]) else '?'
     df2_int = int(tw.interaction_df[1]) if not np.isnan(tw.interaction_df[1]) else '?'
@@ -2912,7 +2912,7 @@ def format_threeway_apa(result: FullThreeWayAnalysisResult) -> str:
     def _p_text(p_val, q_val):
         p_str = f"p < .001" if p_val < 0.001 else f"p = {p_val:.3f}"
         if q_val is not None and np.isfinite(q_val):
-            p_str += ", q < .001" if q_val < 0.001 else f", q = {q_val:.3f}"
+            p_str += ", q(BH) < .001" if q_val < 0.001 else f", q(BH) = {q_val:.3f}"
         return p_str
 
     def _decision_p(p_val, q_val):

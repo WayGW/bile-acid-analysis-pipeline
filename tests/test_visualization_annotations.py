@@ -14,7 +14,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from modules.visualization import BileAcidVisualizer
+from modules.visualization import (
+    BileAcidVisualizer,
+    Q_BH_NOTE,
+    Q_BH_NOTE_SHORT,
+)
 
 
 GOLD = to_rgb("#fff3cd")
@@ -106,8 +110,8 @@ def test_twoway_annotation_uses_q_for_background_and_shows_both_values(twoway_da
     )
     try:
         text = _match_text(ax.texts, "Genotype:")
-        assert "p=0.001, q=0.200 n.s." in text.get_text()
-        assert "p=0.010, q=0.300 n.s." in text.get_text()
+        assert "p=0.001, q(BH)=0.200 n.s." in text.get_text()
+        assert "p=0.010, q(BH)=0.300 n.s." in text.get_text()
         assert np.allclose(_facecolor(text), GREY)
     finally:
         plt.close(ax.figure)
@@ -123,7 +127,7 @@ def test_twoway_annotation_is_gold_only_for_q_significant_effect(twoway_data):
     )
     try:
         text = _match_text(ax.texts, "Genotype:")
-        assert "p=0.020, q=0.010 *" in text.get_text()
+        assert "p=0.020, q(BH)=0.010 *" in text.get_text()
         assert np.allclose(_facecolor(text), GOLD)
     finally:
         plt.close(ax.figure)
@@ -141,7 +145,8 @@ def test_threeway_faceted_summary_shows_both_values_and_uses_q_background(
     )
     try:
         text = _match_text(fig.texts, "Main effects:")
-        assert "Genotype: p=0.001, q=0.200 ns" in text.get_text()
+        assert "Genotype: p=0.001, q(BH)=0.200 ns" in text.get_text()
+        assert Q_BH_NOTE_SHORT in text.get_text()
         assert np.allclose(_facecolor(text), GREY)
     finally:
         plt.close(fig)
@@ -155,7 +160,8 @@ def test_threeway_faceted_summary_shows_both_values_and_uses_q_background(
     )
     try:
         text = _match_text(fig.texts, "Main effects:")
-        assert "Genotype: p=0.020, q=0.010 *" in text.get_text()
+        assert "Genotype: p=0.020, q(BH)=0.010 *" in text.get_text()
+        assert Q_BH_NOTE_SHORT in text.get_text()
         assert np.allclose(_facecolor(text), GOLD)
     finally:
         plt.close(fig)
@@ -179,9 +185,10 @@ def test_threeway_multi_panel_annotation_shows_both_values_and_uses_q_background
         text = _match_text(
             [text for ax in fig.axes for text in ax.texts], "Genotype:"
         )
-        assert "p=0.001, q=0.200 ns" in text.get_text()
-        assert "p=0.010, q=0.300 ns" in text.get_text()
+        assert "p=0.001, q(BH)=0.200 ns" in text.get_text()
+        assert "p=0.010, q(BH)=0.300 ns" in text.get_text()
         assert np.allclose(_facecolor(text), GREY)
+        assert any(Q_BH_NOTE in text.get_text() for text in fig.texts)
     finally:
         plt.close(fig)
 
@@ -198,7 +205,48 @@ def test_threeway_multi_panel_annotation_shows_both_values_and_uses_q_background
         text = _match_text(
             [text for ax in fig.axes for text in ax.texts], "Genotype:"
         )
-        assert "p=0.020, q=0.010 *" in text.get_text()
+        assert "p=0.020, q(BH)=0.010 *" in text.get_text()
         assert np.allclose(_facecolor(text), GOLD)
+        assert any(Q_BH_NOTE in text.get_text() for text in fig.texts)
+    finally:
+        plt.close(fig)
+
+
+def test_twoway_multi_panel_uses_q_bh_labels_and_adds_footnote(twoway_data):
+    result = _twoway_result(
+        factor_a_pvalue=0.020,
+        factor_a_qvalue=0.010,
+    )
+    fig = BileAcidVisualizer().plot_twoway_multi_panel(
+        twoway_data, ["CA"], "A", "B", {"CA": result},
+        factor_a_name="Genotype", factor_b_name="Diet",
+    )
+    try:
+        text = _match_text(
+            [text for ax in fig.axes for text in ax.texts], "Genotype:"
+        )
+        assert "p=0.020, q(BH)=0.010 *" in text.get_text()
+        assert any(Q_BH_NOTE in text.get_text() for text in fig.texts)
+    finally:
+        plt.close(fig)
+
+
+def test_oneway_multi_panel_uses_q_bh_label_and_adds_footnote(twoway_data):
+    result = SimpleNamespace(
+        main_test=SimpleNamespace(
+            pvalue=0.020,
+            qvalue=0.010,
+            significant=True,
+            groups_compared=[],
+        ),
+        posthoc_test=None,
+    )
+    fig = BileAcidVisualizer().plot_multi_panel_groups_with_stats(
+        twoway_data, ["CA"], "A", {"CA": result},
+        ncols=1, show_points=False,
+    )
+    try:
+        assert "q(BH)=0.010" in fig.axes[0].get_title()
+        assert any(Q_BH_NOTE in text.get_text() for text in fig.texts)
     finally:
         plt.close(fig)

@@ -143,7 +143,7 @@ def format_apa_statistics(result: FullAnalysisResult) -> str:
         p_str = f"p = {test.pvalue:.3f}"
     q_str = ""
     if test.qvalue is not None and np.isfinite(test.qvalue):
-        q_str = ", q < .001" if test.qvalue < 0.001 else f", q = {test.qvalue:.3f}"
+        q_str = ", q(BH) < .001" if test.qvalue < 0.001 else f", q(BH) = {test.qvalue:.3f}"
     
     # Effect size
     if test.effect_size is not None:
@@ -232,15 +232,15 @@ def get_twoway_differences_summary(results: Dict[str, FullTwoWayAnalysisResult])
             'Test': tw.test_type.value,
             f'{tw.factor_a_name} F': f"{tw.factor_a_stat:.2f}" if not np.isnan(tw.factor_a_stat) else 'N/A',
             f'{tw.factor_a_name} p': f"{tw.factor_a_pvalue:.4f}" if not np.isnan(tw.factor_a_pvalue) else 'N/A',
-            f'{tw.factor_a_name} q': _fmt_q(tw.factor_a_qvalue),
+            f'{tw.factor_a_name} q (BH)': _fmt_q(tw.factor_a_qvalue),
             f'{tw.factor_a_name} sig': _stars(pa),
             f'{tw.factor_b_name} F': f"{tw.factor_b_stat:.2f}" if not np.isnan(tw.factor_b_stat) else 'N/A',
             f'{tw.factor_b_name} p': f"{tw.factor_b_pvalue:.4f}" if not np.isnan(tw.factor_b_pvalue) else 'N/A',
-            f'{tw.factor_b_name} q': _fmt_q(tw.factor_b_qvalue),
+            f'{tw.factor_b_name} q (BH)': _fmt_q(tw.factor_b_qvalue),
             f'{tw.factor_b_name} sig': _stars(pb),
             'Interaction F': f"{tw.interaction_stat:.2f}" if not np.isnan(tw.interaction_stat) else 'N/A',
             'Interaction p': f"{tw.interaction_pvalue:.4f}" if not np.isnan(tw.interaction_pvalue) else 'N/A',
-            'Interaction q': _fmt_q(tw.interaction_qvalue),
+            'Interaction q (BH)': _fmt_q(tw.interaction_qvalue),
             'Interaction sig': _stars(pab),
             'Post-hoc type': tw.posthoc_type,
             'Sig. post-hoc pairs': n_sig_posthoc,
@@ -293,27 +293,27 @@ def get_threeway_differences_summary(results: Dict[str, FullThreeWayAnalysisResu
             'Test': tw.test_type.value,
             f'{tw.factor_a_name} F': _fmt(tw.factor_a_stat),
             f'{tw.factor_a_name} p': _fmt_p(tw.factor_a_pvalue),
-            f'{tw.factor_a_name} q': _fmt_q(tw.factor_a_qvalue),
+            f'{tw.factor_a_name} q (BH)': _fmt_q(tw.factor_a_qvalue),
             f'{tw.factor_a_name} sig': _stars(effects['A']),
             f'{tw.factor_b_name} F': _fmt(tw.factor_b_stat),
             f'{tw.factor_b_name} p': _fmt_p(tw.factor_b_pvalue),
-            f'{tw.factor_b_name} q': _fmt_q(tw.factor_b_qvalue),
+            f'{tw.factor_b_name} q (BH)': _fmt_q(tw.factor_b_qvalue),
             f'{tw.factor_b_name} sig': _stars(effects['B']),
             f'{tw.factor_c_name} F': _fmt(tw.factor_c_stat),
             f'{tw.factor_c_name} p': _fmt_p(tw.factor_c_pvalue),
-            f'{tw.factor_c_name} q': _fmt_q(tw.factor_c_qvalue),
+            f'{tw.factor_c_name} q (BH)': _fmt_q(tw.factor_c_qvalue),
             f'{tw.factor_c_name} sig': _stars(effects['C']),
             f'{tw.factor_a_name}\u00d7{tw.factor_b_name} p': _fmt_p(tw.interaction_ab_pvalue),
-            f'{tw.factor_a_name}\u00d7{tw.factor_b_name} q': _fmt_q(tw.interaction_ab_qvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_b_name} q (BH)': _fmt_q(tw.interaction_ab_qvalue),
             f'{tw.factor_a_name}\u00d7{tw.factor_b_name} sig': _stars(effects['AB']),
             f'{tw.factor_a_name}\u00d7{tw.factor_c_name} p': _fmt_p(tw.interaction_ac_pvalue),
-            f'{tw.factor_a_name}\u00d7{tw.factor_c_name} q': _fmt_q(tw.interaction_ac_qvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_c_name} q (BH)': _fmt_q(tw.interaction_ac_qvalue),
             f'{tw.factor_a_name}\u00d7{tw.factor_c_name} sig': _stars(effects['AC']),
             f'{tw.factor_b_name}\u00d7{tw.factor_c_name} p': _fmt_p(tw.interaction_bc_pvalue),
-            f'{tw.factor_b_name}\u00d7{tw.factor_c_name} q': _fmt_q(tw.interaction_bc_qvalue),
+            f'{tw.factor_b_name}\u00d7{tw.factor_c_name} q (BH)': _fmt_q(tw.interaction_bc_qvalue),
             f'{tw.factor_b_name}\u00d7{tw.factor_c_name} sig': _stars(effects['BC']),
             f'{tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name} p': _fmt_p(tw.interaction_abc_pvalue),
-            f'{tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name} q': _fmt_q(tw.interaction_abc_qvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name} q (BH)': _fmt_q(tw.interaction_abc_qvalue),
             f'{tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name} sig': _stars(effects['ABC']),
             'Post-hoc type': tw.posthoc_type,
             'Sig. post-hoc pairs': n_sig_posthoc,
@@ -2136,7 +2136,7 @@ class ExcelReportGenerator:
             ]
         hydro_params = ['Hydrophobicity pH', 'Hydrophobicity Tissue'] if self.hydrophobicity is not None else []
         hydro_values = [f'{self.hydro_ph}', self.hydro_tissue.capitalize()] if self.hydrophobicity is not None else []
-        fdr_value = ('BH q-values across analytes in each section/scale family'
+        fdr_value = ('BH correction: q(BH) values across all tested endpoints in each section/scale family'
                      if self.fdr_enabled else 'Off')
         summary_data = {
             'Parameter': ['Total Samples', 'Groups', 'Bile Acids Measured', 'Significance Level',
@@ -2321,7 +2321,7 @@ class ExcelReportGenerator:
                 '; '.join(cell_sizes), len(self.ba_cols),
                 f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)',
                 'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)',
-                ('BH q-values across analytes in each effect family'
+                ('BH correction: q(BH) values across all tested endpoints in each effect family'
                  if self.fdr_enabled else 'Off'),
             ] + lod_values_tw + hydro_values_tw
         }
@@ -2620,7 +2620,7 @@ class ExcelReportGenerator:
                 ', '.join(fa_levels), ', '.join(fb_levels), ', '.join(fc_levels),
                 len(self.ba_cols), f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)',
                 'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)',
-                ('BH q-values across analytes in each effect family'
+                ('BH correction: q(BH) values across all tested endpoints in each effect family'
                  if self.fdr_enabled else 'Off'),
             ] + lod_values_3w + hydro_values_3w
         }

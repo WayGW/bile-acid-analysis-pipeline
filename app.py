@@ -1506,8 +1506,8 @@ def render_sidebar():
     fdr_enabled = st.sidebar.checkbox(
         "FDR-adjust primary tests (BH)",
         value=True,
-        help="Apply Benjamini-Hochberg q-values across analytes within each "
-             "section and scale (raw/log₁₀). q-significant omnibus results gate "
+        help="Apply Benjamini-Hochberg q(BH) values across analytes within each "
+             "section and scale (raw/log₁₀). q(BH) significance gates "
              "post-hoc comparisons; pairwise tests remain within-endpoint BH-adjusted."
     )
     plot_type = st.sidebar.selectbox("Plot type", ["box", "violin", "bar", "strip"])
