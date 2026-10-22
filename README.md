@@ -185,7 +185,7 @@ where `O` is the sum of observed (non-below-LOD) contributions and `R` is the su
 - Per-sample and per-group aggregate burdens are written to the `Aggregate_LOD_Burden` report worksheet
 - Category sheets reuse their corresponding totals statistics, so p- and q-values are identical without duplicate testing
 - Two-way ART main effects now use the full factorial model on aligned ranks, fixing the residual degrees of freedom and F statistics
-- Excel reports, in-app summaries, APA text, and figures display q-values and LOD warnings consistently
+- Excel reports, in-app summaries, APA text, and figures display raw p-values alongside corrected q-values consistently, with q-based significance coloring in factorial figure annotations; LOD warnings remain visible throughout
 - Statistics remain available for raw and log10 scales, with separate FDR families for each
 
 The lazy-section rendering, bounded-memory exports, and figure-recipe improvements from 4.6.2 remain in place.
