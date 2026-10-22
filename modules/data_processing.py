@@ -44,6 +44,7 @@ class DataStructureInfo:
     units: str = "nmol/L"
     sheet_used: Optional[str] = None  # Which sheet the data was loaded from
     analyte_lods: Dict[str, float] = field(default_factory=dict)  # Per-analyte LODs
+    analyte_lod_values: Dict[str, float] = field(default_factory=dict)  # Resolved LOD used for replacement (incl. fallback)
     analyte_lod_counts: Dict[str, int] = field(default_factory=dict)  # Count of below-LOD values per analyte
     analyte_lod_rows: Dict[str, List[int]] = field(default_factory=dict)  # Row indices with LOD replacements per analyte
     lod_source: str = "default"  # "standards" or "default"
@@ -752,16 +753,19 @@ class BileAcidDataProcessor:
         # Also track how many values and which rows were below LOD for each analyte
         lod_counts = {}
         lod_rows = {}
+        lod_values = {}
         for col in structure.bile_acid_cols:
             if col in df.columns:
                 # Get this analyte's LOD (or use fallback)
                 analyte_lod = structure.analyte_lods.get(col, self.lod_value)
+                lod_values[col] = analyte_lod
                 cleaned_series, below_lod_count, below_lod_indices = self._clean_numeric_column_with_count(df[col], analyte_lod)
                 df[col] = cleaned_series
                 lod_counts[col] = below_lod_count
                 lod_rows[col] = below_lod_indices
         
-        # Store the LOD counts and row indices in the structure
+        # Store the LOD counts, resolved LOD values and row indices in the structure
+        structure.analyte_lod_values = lod_values
         structure.analyte_lod_counts = lod_counts
         structure.analyte_lod_rows = lod_rows
         

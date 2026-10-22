@@ -104,6 +104,8 @@ class StatisticalResult:
     df: Optional[float] = None
     groups_compared: List[str] = field(default_factory=list)
     significant: bool = False
+    qvalue: Optional[float] = None
+    fdr_family: Optional[str] = None
     alpha: float = 0.05
     
     # For post-hoc tests
@@ -130,12 +132,15 @@ class TwoWayResult:
     # Main effects and interaction
     factor_a_stat: float = np.nan
     factor_a_pvalue: float = np.nan
+    factor_a_qvalue: Optional[float] = None
     factor_a_df: Tuple = (0, 0)  # (df_num, df_den)
     factor_b_stat: float = np.nan
     factor_b_pvalue: float = np.nan
+    factor_b_qvalue: Optional[float] = None
     factor_b_df: Tuple = (0, 0)
     interaction_stat: float = np.nan
     interaction_pvalue: float = np.nan
+    interaction_qvalue: Optional[float] = None
     interaction_df: Tuple = (0, 0)
     interaction_significant: bool = False
 
@@ -172,31 +177,38 @@ class ThreeWayResult:
     # Main effects
     factor_a_stat: float = np.nan
     factor_a_pvalue: float = np.nan
+    factor_a_qvalue: Optional[float] = None
     factor_a_df: Tuple = (0, 0)
     factor_b_stat: float = np.nan
     factor_b_pvalue: float = np.nan
+    factor_b_qvalue: Optional[float] = None
     factor_b_df: Tuple = (0, 0)
     factor_c_stat: float = np.nan
     factor_c_pvalue: float = np.nan
+    factor_c_qvalue: Optional[float] = None
     factor_c_df: Tuple = (0, 0)
 
     # Two-way interactions
     interaction_ab_stat: float = np.nan
     interaction_ab_pvalue: float = np.nan
+    interaction_ab_qvalue: Optional[float] = None
     interaction_ab_df: Tuple = (0, 0)
     interaction_ab_significant: bool = False
     interaction_ac_stat: float = np.nan
     interaction_ac_pvalue: float = np.nan
+    interaction_ac_qvalue: Optional[float] = None
     interaction_ac_df: Tuple = (0, 0)
     interaction_ac_significant: bool = False
     interaction_bc_stat: float = np.nan
     interaction_bc_pvalue: float = np.nan
+    interaction_bc_qvalue: Optional[float] = None
     interaction_bc_df: Tuple = (0, 0)
     interaction_bc_significant: bool = False
 
     # Three-way interaction
     interaction_abc_stat: float = np.nan
     interaction_abc_pvalue: float = np.nan
+    interaction_abc_qvalue: Optional[float] = None
     interaction_abc_df: Tuple = (0, 0)
     interaction_abc_significant: bool = False
 
@@ -220,6 +232,167 @@ class FullThreeWayAnalysisResult:
     threeway_result: ThreeWayResult
     descriptive_stats: Optional[pd.DataFrame] = None  # Cell means (A x B x C)
     assumption_notes: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Cross-analyte FDR helpers (S4)
+# ---------------------------------------------------------------------------
+
+_TWO_WAY_FDR_EFFECTS = {
+    'A': ('factor_a_pvalue', 'factor_a_qvalue'),
+    'B': ('factor_b_pvalue', 'factor_b_qvalue'),
+    'interaction': ('interaction_pvalue', 'interaction_qvalue'),
+}
+
+_THREE_WAY_FDR_EFFECTS = {
+    'A': ('factor_a_pvalue', 'factor_a_qvalue'),
+    'B': ('factor_b_pvalue', 'factor_b_qvalue'),
+    'C': ('factor_c_pvalue', 'factor_c_qvalue'),
+    'AB': ('interaction_ab_pvalue', 'interaction_ab_qvalue'),
+    'AC': ('interaction_ac_pvalue', 'interaction_ac_qvalue'),
+    'BC': ('interaction_bc_pvalue', 'interaction_bc_qvalue'),
+    'ABC': ('interaction_abc_pvalue', 'interaction_abc_qvalue'),
+}
+
+_THREE_WAY_INTERACTION_FLAGS = {
+    'AB': 'interaction_ab_significant',
+    'AC': 'interaction_ac_significant',
+    'BC': 'interaction_bc_significant',
+    'ABC': 'interaction_abc_significant',
+}
+
+
+def adjust_pvalues_bh(pvalues) -> np.ndarray:
+    """Benjamini-Hochberg adjustment that preserves NaN entries.
+
+    Only finite p-values belong to the testing family; missing/skipped tests
+    stay NaN and do not inflate the family size.
+    """
+    from scipy.stats import false_discovery_control
+
+    arr = np.asarray(list(pvalues), dtype=float)
+    adjusted = np.full(arr.shape, np.nan, dtype=float)
+    finite = np.isfinite(arr)
+    if not finite.any():
+        return adjusted
+
+    values = arr[finite]
+    if len(values) == 1:
+        adjusted[finite] = values
+    else:
+        adjusted[finite] = false_discovery_control(values, method='bh')
+    return adjusted
+
+
+def apply_fdr_to_oneway_results(
+    results: Dict[str, FullAnalysisResult],
+    alpha: float,
+    family: str,
+) -> int:
+    """Apply BH FDR across a family of one-way main tests.
+
+    Raw p-values are preserved; q-values are stored on ``main_test`` and the
+    ``significant`` flag is refreshed from q. Returns the number of tests in
+    the family.
+    """
+    records = []
+    for name, result in results.items():
+        if result is None or result.main_test is None:
+            continue
+        p = result.main_test.pvalue
+        if p is not None and np.isfinite(p):
+            records.append((name, result, float(p)))
+
+    qvalues = adjust_pvalues_bh([p for _, _, p in records])
+    for (_, result, _), q in zip(records, qvalues):
+        result.main_test.qvalue = float(q)
+        result.main_test.fdr_family = family
+        result.main_test.significant = bool(q < alpha)
+    return len(records)
+
+
+def apply_fdr_to_twoway_results(
+    results: Dict[str, FullTwoWayAnalysisResult],
+    alpha: float,
+    family_prefix: str,
+) -> Dict[str, int]:
+    """Apply BH FDR across analytes separately for each two-way effect."""
+    family_sizes: Dict[str, int] = {}
+    for effect, (p_attr, q_attr) in _TWO_WAY_FDR_EFFECTS.items():
+        records = []
+        for name, result in results.items():
+            if result is None or result.twoway_result is None:
+                continue
+            p = getattr(result.twoway_result, p_attr, np.nan)
+            if p is not None and np.isfinite(p):
+                records.append((result, float(p)))
+
+        qvalues = adjust_pvalues_bh([p for _, p in records])
+        family = f'{family_prefix}:{effect}'
+        for (result, _), q in zip(records, qvalues):
+            setattr(result.twoway_result, q_attr, float(q))
+        family_sizes[family] = len(records)
+
+        if effect == 'interaction':
+            for result, _ in records:
+                q = result.twoway_result.interaction_qvalue
+                result.twoway_result.interaction_significant = bool(q < alpha)
+
+    return family_sizes
+
+
+def apply_fdr_to_threeway_results(
+    results: Dict[str, FullThreeWayAnalysisResult],
+    alpha: float,
+    family_prefix: str,
+) -> Dict[str, int]:
+    """Apply BH FDR across analytes separately for each three-way effect."""
+    family_sizes: Dict[str, int] = {}
+    for effect, (p_attr, q_attr) in _THREE_WAY_FDR_EFFECTS.items():
+        records = []
+        for name, result in results.items():
+            if result is None or result.threeway_result is None:
+                continue
+            p = getattr(result.threeway_result, p_attr, np.nan)
+            if p is not None and np.isfinite(p):
+                records.append((result, float(p)))
+
+        qvalues = adjust_pvalues_bh([p for _, p in records])
+        family = f'{family_prefix}:{effect}'
+        for (result, _), q in zip(records, qvalues):
+            setattr(result.threeway_result, q_attr, float(q))
+        family_sizes[family] = len(records)
+
+        flag_attr = _THREE_WAY_INTERACTION_FLAGS.get(effect)
+        if flag_attr:
+            for result, _ in records:
+                q = getattr(result.threeway_result, q_attr)
+                setattr(result.threeway_result, flag_attr, bool(q < alpha))
+
+    return family_sizes
+
+
+def effect_pvalue(obj, p_attr: str, q_attr: str) -> float:
+    """Return the q-value when available, otherwise the raw p-value."""
+    q = getattr(obj, q_attr, None)
+    if q is not None and np.isfinite(q):
+        return float(q)
+    p = getattr(obj, p_attr, np.nan)
+    return float(p) if p is not None else np.nan
+
+
+def any_twoway_effect_significant(result: FullTwoWayAnalysisResult,
+                                  alpha: float) -> bool:
+    tw = result.twoway_result
+    return any(effect_pvalue(tw, p_attr, q_attr) < alpha
+               for p_attr, q_attr in _TWO_WAY_FDR_EFFECTS.values())
+
+
+def any_threeway_effect_significant(result: FullThreeWayAnalysisResult,
+                                    alpha: float) -> bool:
+    tw = result.threeway_result
+    return any(effect_pvalue(tw, p_attr, q_attr) < alpha
+               for p_attr, q_attr in _THREE_WAY_FDR_EFFECTS.values())
 
 
 class StatisticalAnalyzer:
@@ -1057,7 +1230,8 @@ class StatisticalAnalyzer:
         factor_a_col: str,
         factor_b_col: str,
         factor_a_name: Optional[str] = None,
-        factor_b_name: Optional[str] = None
+        factor_b_name: Optional[str] = None,
+        run_posthoc: bool = True
     ) -> FullTwoWayAnalysisResult:
         """
         Perform complete two-way factorial ANOVA analysis.
@@ -1112,9 +1286,10 @@ class StatisticalAnalyzer:
             )
 
         # Run post-hoc tests based on interaction significance
-        twoway_result = self._run_twoway_posthoc(
-            df, value_col, factor_a_col, factor_b_col, twoway_result
-        )
+        if run_posthoc:
+            twoway_result = self._run_twoway_posthoc(
+                df, value_col, factor_a_col, factor_b_col, twoway_result
+            )
 
         # Cell descriptive statistics (Factor A x Factor B means)
         descriptives = self._get_twoway_descriptive_stats(
@@ -1349,6 +1524,72 @@ class StatisticalAnalyzer:
         n = len(Y)
         from scipy.stats import rankdata
 
+        def _fit_art_effect(ranks: np.ndarray, effect: str):
+            """Fit the full factorial model to aligned ranks and read one effect.
+
+            Wobbrock's ART procedure requires the full model on each aligned-rank
+            column. Reading the effect of interest from a one-way F gives the
+            wrong error df and inflates main-effect F values (S6).
+            """
+            n_a = len(levels_a)
+            n_b = len(levels_b)
+            fallback_df = {
+                'A': (n_a - 1, n - n_a),
+                'B': (n_b - 1, n - n_b),
+                'AB': ((n_a - 1) * (n_b - 1), n - n_a * n_b),
+            }[effect]
+
+            try:
+                import statsmodels.api as sm  # noqa: F401
+                from statsmodels.formula.api import ols as sm_ols
+                from statsmodels.stats.anova import anova_lm as sm_anova_lm
+
+                art_df = pd.DataFrame({
+                    'ranked': ranks,
+                    'A': df[factor_a_col].values,
+                    'B': df[factor_b_col].values,
+                })
+                model = sm_ols('ranked ~ C(A) * C(B)', data=art_df).fit()
+                art_table = sm_anova_lm(model, typ=2)
+                df_residual = int(art_table.loc['Residual', 'df'])
+
+                for idx in art_table.index:
+                    idx_str = str(idx)
+                    if idx_str in ('Residual', 'Intercept'):
+                        continue
+                    has_a = 'C(A)' in idx_str
+                    has_b = 'C(B)' in idx_str
+                    if effect == 'A' and has_a and not has_b:
+                        return (float(art_table.loc[idx, 'F']),
+                                float(art_table.loc[idx, 'PR(>F)']),
+                                (int(art_table.loc[idx, 'df']), df_residual))
+                    if effect == 'B' and has_b and not has_a:
+                        return (float(art_table.loc[idx, 'F']),
+                                float(art_table.loc[idx, 'PR(>F)']),
+                                (int(art_table.loc[idx, 'df']), df_residual))
+                    if effect == 'AB' and has_a and has_b:
+                        return (float(art_table.loc[idx, 'F']),
+                                float(art_table.loc[idx, 'PR(>F)']),
+                                (int(art_table.loc[idx, 'df']), df_residual))
+            except ImportError:
+                pass
+            except Exception:
+                pass
+
+            # Fallback: one-way F on the aligned ranks, with matching error df.
+            if effect == 'A':
+                groups = [ranks[df[factor_a_col] == a] for a in levels_a]
+            elif effect == 'B':
+                groups = [ranks[df[factor_b_col] == b] for b in levels_b]
+            else:
+                groups = [ranks[(df[factor_a_col] == a) & (df[factor_b_col] == b)]
+                          for a in levels_a for b in levels_b]
+            groups = [g for g in groups if len(g) > 0]
+            if len(groups) >= 2:
+                f_val, p_val = stats.f_oneway(*groups)
+                return float(f_val), float(p_val), fallback_df
+            return np.nan, np.nan, fallback_df
+
         # === ART for Factor A ===
         aligned_a = np.zeros(n)
         for i in range(n):
@@ -1357,12 +1598,10 @@ class StatisticalAnalyzer:
             aligned_a[i] = Y[i] - (marginal_b[b_i] - grand_mean) - (cell_means[(a_i, b_i)] - marginal_a[a_i] - marginal_b[b_i] + grand_mean)
 
         ranks_a = rankdata(aligned_a)
-        groups_a = [ranks_a[df[factor_a_col] == a] for a in levels_a]
-        if all(len(g) > 0 for g in groups_a):
-            f_a, p_a = stats.f_oneway(*groups_a)
-            result.factor_a_stat = f_a
-            result.factor_a_pvalue = p_a
-            result.factor_a_df = (len(levels_a) - 1, n - len(levels_a) * len(levels_b))
+        f_a, p_a, df_a = _fit_art_effect(ranks_a, 'A')
+        result.factor_a_stat = f_a
+        result.factor_a_pvalue = p_a
+        result.factor_a_df = df_a
 
         # === ART for Factor B ===
         aligned_b = np.zeros(n)
@@ -1372,12 +1611,10 @@ class StatisticalAnalyzer:
             aligned_b[i] = Y[i] - (marginal_a[a_i] - grand_mean) - (cell_means[(a_i, b_i)] - marginal_a[a_i] - marginal_b[b_i] + grand_mean)
 
         ranks_b = rankdata(aligned_b)
-        groups_b = [ranks_b[df[factor_b_col] == b] for b in levels_b]
-        if all(len(g) > 0 for g in groups_b):
-            f_b, p_b = stats.f_oneway(*groups_b)
-            result.factor_b_stat = f_b
-            result.factor_b_pvalue = p_b
-            result.factor_b_df = (len(levels_b) - 1, n - len(levels_a) * len(levels_b))
+        f_b, p_b, df_b = _fit_art_effect(ranks_b, 'B')
+        result.factor_b_stat = f_b
+        result.factor_b_pvalue = p_b
+        result.factor_b_df = df_b
 
         # === ART for Interaction AxB ===
         aligned_ab = np.zeros(n)
@@ -1387,42 +1624,10 @@ class StatisticalAnalyzer:
             aligned_ab[i] = Y[i] - (marginal_a[a_i] - grand_mean) - (marginal_b[b_i] - grand_mean)
 
         ranks_ab = rankdata(aligned_ab)
-
-        cell_labels = df[factor_a_col].astype(str) + '_' + df[factor_b_col].astype(str)
-        unique_cells = sorted(cell_labels.unique())
-        groups_ab = [ranks_ab[cell_labels == cell] for cell in unique_cells]
-        if all(len(g) > 0 for g in groups_ab) and len(groups_ab) > 1:
-            f_ab, p_ab = stats.f_oneway(*groups_ab)
-            n_a = len(levels_a)
-            n_b = len(levels_b)
-            df_interaction = (n_a - 1) * (n_b - 1)
-            df_residual = n - n_a * n_b
-
-            try:
-                import statsmodels.api as sm
-                from statsmodels.formula.api import ols as sm_ols
-                from statsmodels.stats.anova import anova_lm as sm_anova_lm
-
-                art_df = pd.DataFrame({
-                    'rank_ab': ranks_ab,
-                    'A': df[factor_a_col].values,
-                    'B': df[factor_b_col].values
-                })
-                model_ab = sm_ols('rank_ab ~ C(A) * C(B)', data=art_df).fit()
-                art_table = sm_anova_lm(model_ab, typ=2)
-
-                for idx in art_table.index:
-                    idx_str = str(idx)
-                    if ':' in idx_str or '*' in idx_str:
-                        result.interaction_stat = art_table.loc[idx, 'F']
-                        result.interaction_pvalue = art_table.loc[idx, 'PR(>F)']
-                        result.interaction_df = (int(art_table.loc[idx, 'df']),
-                                                  int(art_table.loc['Residual', 'df']))
-                        break
-            except (ImportError, Exception):
-                result.interaction_stat = f_ab
-                result.interaction_pvalue = p_ab
-                result.interaction_df = (df_interaction, df_residual)
+        f_ab, p_ab, df_ab = _fit_art_effect(ranks_ab, 'AB')
+        result.interaction_stat = f_ab
+        result.interaction_pvalue = p_ab
+        result.interaction_df = df_ab
 
         result.interaction_significant = result.interaction_pvalue < self.alpha
 
@@ -1453,6 +1658,20 @@ class StatisticalAnalyzer:
 
         return result
 
+    def run_twoway_posthoc(
+        self,
+        data: pd.DataFrame,
+        value_col: str,
+        factor_a_col: str,
+        factor_b_col: str,
+        result: FullTwoWayAnalysisResult,
+    ) -> FullTwoWayAnalysisResult:
+        """Run two-way post-hoc tests after an FDR correction pass."""
+        result.twoway_result = self._run_twoway_posthoc(
+            data, value_col, factor_a_col, factor_b_col, result.twoway_result
+        )
+        return result
+
     def _run_twoway_posthoc(
         self,
         data: pd.DataFrame,
@@ -1470,7 +1689,7 @@ class StatisticalAnalyzer:
         """
         pairwise_rows = []
 
-        if twoway_result.interaction_significant:
+        if effect_pvalue(twoway_result, 'interaction_pvalue', 'interaction_qvalue') < self.alpha:
             twoway_result.posthoc_type = "simple_main_effects"
 
             # Compare Factor A levels within each level of Factor B
@@ -1528,7 +1747,7 @@ class StatisticalAnalyzer:
             twoway_result.posthoc_type = "main_effect_marginal"
 
             # Post-hoc for Factor A if significant
-            if twoway_result.factor_a_pvalue < self.alpha:
+            if effect_pvalue(twoway_result, 'factor_a_pvalue', 'factor_a_qvalue') < self.alpha:
                 a_levels = sorted(data[factor_a_col].unique())
                 for i in range(len(a_levels)):
                     for j in range(i + 1, len(a_levels)):
@@ -1551,7 +1770,7 @@ class StatisticalAnalyzer:
                         })
 
             # Post-hoc for Factor B if significant
-            if twoway_result.factor_b_pvalue < self.alpha:
+            if effect_pvalue(twoway_result, 'factor_b_pvalue', 'factor_b_qvalue') < self.alpha:
                 b_levels = sorted(data[factor_b_col].unique())
                 for i in range(len(b_levels)):
                     for j in range(i + 1, len(b_levels)):
@@ -1635,7 +1854,8 @@ class StatisticalAnalyzer:
         factor_c_col: str,
         factor_a_name: Optional[str] = None,
         factor_b_name: Optional[str] = None,
-        factor_c_name: Optional[str] = None
+        factor_c_name: Optional[str] = None,
+        run_posthoc: bool = True
     ) -> FullThreeWayAnalysisResult:
         """
         Perform complete three-way factorial ANOVA analysis.
@@ -1695,9 +1915,10 @@ class StatisticalAnalyzer:
             )
 
         # Run post-hoc tests based on interaction significance
-        threeway_result = self._run_threeway_posthoc(
-            df, value_col, factor_a_col, factor_b_col, factor_c_col, threeway_result
-        )
+        if run_posthoc:
+            threeway_result = self._run_threeway_posthoc(
+                df, value_col, factor_a_col, factor_b_col, factor_c_col, threeway_result
+            )
 
         # Cell descriptive statistics (A x B x C means)
         descriptives = self._get_threeway_descriptive_stats(
@@ -2270,6 +2491,22 @@ class StatisticalAnalyzer:
             result.interaction_abc_stat, result.interaction_abc_pvalue, result.interaction_abc_df = f_val, p_val, df_tup
             result.interaction_abc_significant = p_val < alpha if not np.isnan(p_val) else False
 
+    def run_threeway_posthoc(
+        self,
+        data: pd.DataFrame,
+        value_col: str,
+        factor_a_col: str,
+        factor_b_col: str,
+        factor_c_col: str,
+        result: FullThreeWayAnalysisResult,
+    ) -> FullThreeWayAnalysisResult:
+        """Run three-way post-hoc tests after an FDR correction pass."""
+        result.threeway_result = self._run_threeway_posthoc(
+            data, value_col, factor_a_col, factor_b_col, factor_c_col,
+            result.threeway_result
+        )
+        return result
+
     def _run_threeway_posthoc(
         self,
         data: pd.DataFrame,
@@ -2376,13 +2613,13 @@ class StatisticalAnalyzer:
         else:
             # No interactions significant: marginal post-hocs for significant main effects
             tw.posthoc_type = "main_effect_marginal"
-            if tw.factor_a_pvalue < self.alpha:
+            if effect_pvalue(tw, 'factor_a_pvalue', 'factor_a_qvalue') < self.alpha:
                 _pairwise(data, factor_a_col, tw.factor_a_name,
                           f'{tw.factor_a_name} (marginal)', 'all')
-            if tw.factor_b_pvalue < self.alpha:
+            if effect_pvalue(tw, 'factor_b_pvalue', 'factor_b_qvalue') < self.alpha:
                 _pairwise(data, factor_b_col, tw.factor_b_name,
                           f'{tw.factor_b_name} (marginal)', 'all')
-            if tw.factor_c_pvalue < self.alpha:
+            if effect_pvalue(tw, 'factor_c_pvalue', 'factor_c_qvalue') < self.alpha:
                 _pairwise(data, factor_c_col, tw.factor_c_name,
                           f'{tw.factor_c_name} (marginal)', 'all')
 
@@ -2559,6 +2796,8 @@ def format_analysis_report(result: FullAnalysisResult) -> str:
     lines.append(f"Test: {result.main_test.test_type.value}")
     lines.append(f"Statistic: {result.main_test.statistic:.4f}")
     lines.append(f"P-value: {result.main_test.pvalue:.4f}")
+    if result.main_test.qvalue is not None:
+        lines.append(f"q-value (BH): {result.main_test.qvalue:.4f}")
     lines.append(f"Significant (α={result.main_test.alpha}): "
                 f"{'YES' if result.main_test.significant else 'NO'}")
     
@@ -2594,13 +2833,17 @@ def format_twoway_apa(result: FullTwoWayAnalysisResult) -> str:
     parts = [f"A {test_name} was conducted to examine the effects of "
              f"{tw.factor_a_name} and {tw.factor_b_name} on {result.variable_name}."]
 
-    def _format_effect(name, f_val, p_val, df_tup, eta):
+    def _format_effect(name, f_val, p_val, q_val, df_tup, eta):
         """Format a single effect in APA style."""
         if np.isnan(f_val):
             return f"The effect of {name} could not be computed."
 
-        sig = "significant" if p_val < tw.alpha else "not significant"
+        decision_p = (q_val if q_val is not None and np.isfinite(q_val)
+                      else p_val)
+        sig = "significant" if decision_p < tw.alpha else "not significant"
         p_str = f"p < .001" if p_val < 0.001 else f"p = {p_val:.3f}"
+        if q_val is not None and np.isfinite(q_val):
+            p_str += ", q(BH) < .001" if q_val < 0.001 else f", q(BH) = {q_val:.3f}"
         eta_str = f", partial η² = {eta:.2f}" if eta and not np.isnan(eta) else ""
 
         df1 = int(df_tup[0]) if not np.isnan(df_tup[0]) else '?'
@@ -2612,16 +2855,25 @@ def format_twoway_apa(result: FullTwoWayAnalysisResult) -> str:
     # Main effects
     eta_a = tw.effect_sizes.get(tw.factor_a_name, np.nan)
     parts.append(_format_effect(tw.factor_a_name, tw.factor_a_stat,
-                                tw.factor_a_pvalue, tw.factor_a_df, eta_a))
+                                tw.factor_a_pvalue, tw.factor_a_qvalue,
+                                tw.factor_a_df, eta_a))
 
     eta_b = tw.effect_sizes.get(tw.factor_b_name, np.nan)
     parts.append(_format_effect(tw.factor_b_name, tw.factor_b_stat,
-                                tw.factor_b_pvalue, tw.factor_b_df, eta_b))
+                                tw.factor_b_pvalue, tw.factor_b_qvalue,
+                                tw.factor_b_df, eta_b))
 
     # Interaction
     eta_int = tw.effect_sizes.get(f'{tw.factor_a_name}×{tw.factor_b_name}', np.nan)
-    int_sig = "significant" if tw.interaction_significant else "not significant"
+    decision_p = (tw.interaction_qvalue
+                  if tw.interaction_qvalue is not None
+                  and np.isfinite(tw.interaction_qvalue)
+                  else tw.interaction_pvalue)
+    int_sig = "significant" if decision_p < tw.alpha else "not significant"
     int_p = f"p < .001" if tw.interaction_pvalue < 0.001 else f"p = {tw.interaction_pvalue:.3f}"
+    if tw.interaction_qvalue is not None and np.isfinite(tw.interaction_qvalue):
+        int_p += (", q(BH) < .001" if tw.interaction_qvalue < 0.001
+                  else f", q(BH) = {tw.interaction_qvalue:.3f}")
     int_eta = f", partial η² = {eta_int:.2f}" if eta_int and not np.isnan(eta_int) else ""
     df1_int = int(tw.interaction_df[0]) if not np.isnan(tw.interaction_df[0]) else '?'
     df2_int = int(tw.interaction_df[1]) if not np.isnan(tw.interaction_df[1]) else '?'
@@ -2657,22 +2909,33 @@ def format_threeway_apa(result: FullThreeWayAnalysisResult) -> str:
              f"{tw.factor_a_name}, {tw.factor_b_name}, and {tw.factor_c_name} "
              f"on {result.variable_name}."]
 
-    def _format_effect(name, f_val, p_val, df_tup, eta):
+    def _p_text(p_val, q_val):
+        p_str = f"p < .001" if p_val < 0.001 else f"p = {p_val:.3f}"
+        if q_val is not None and np.isfinite(q_val):
+            p_str += ", q(BH) < .001" if q_val < 0.001 else f", q(BH) = {q_val:.3f}"
+        return p_str
+
+    def _decision_p(p_val, q_val):
+        return q_val if q_val is not None and np.isfinite(q_val) else p_val
+
+    def _format_effect(name, f_val, p_val, q_val, df_tup, eta):
         if np.isnan(f_val):
             return f"The effect of {name} could not be computed."
-        sig = "significant" if p_val < tw.alpha else "not significant"
-        p_str = f"p < .001" if p_val < 0.001 else f"p = {p_val:.3f}"
+        sig = ("significant" if _decision_p(p_val, q_val) < tw.alpha
+               else "not significant")
+        p_str = _p_text(p_val, q_val)
         eta_str = f", partial \u03b7\u00b2 = {eta:.2f}" if eta and not np.isnan(eta) else ""
         df1 = int(df_tup[0]) if not np.isnan(df_tup[0]) else '?'
         df2 = int(df_tup[1]) if not np.isnan(df_tup[1]) else '?'
         return (f"The main effect of {name} was {sig}, "
                 f"F({df1},{df2}) = {f_val:.2f}, {p_str}{eta_str}.")
 
-    def _format_interaction(name, f_val, p_val, df_tup, eta):
+    def _format_interaction(name, f_val, p_val, q_val, df_tup, eta):
         if np.isnan(f_val):
             return f"The {name} interaction could not be computed."
-        sig = "significant" if p_val < tw.alpha else "not significant"
-        p_str = f"p < .001" if p_val < 0.001 else f"p = {p_val:.3f}"
+        sig = ("significant" if _decision_p(p_val, q_val) < tw.alpha
+               else "not significant")
+        p_str = _p_text(p_val, q_val)
         eta_str = f", partial \u03b7\u00b2 = {eta:.2f}" if eta and not np.isnan(eta) else ""
         df1 = int(df_tup[0]) if not np.isnan(df_tup[0]) else '?'
         df2 = int(df_tup[1]) if not np.isnan(df_tup[1]) else '?'
@@ -2680,30 +2943,38 @@ def format_threeway_apa(result: FullThreeWayAnalysisResult) -> str:
                 f"F({df1},{df2}) = {f_val:.2f}, {p_str}{eta_str}.")
 
     # Main effects
-    for name, f_val, p_val, df_tup in [
-        (tw.factor_a_name, tw.factor_a_stat, tw.factor_a_pvalue, tw.factor_a_df),
-        (tw.factor_b_name, tw.factor_b_stat, tw.factor_b_pvalue, tw.factor_b_df),
-        (tw.factor_c_name, tw.factor_c_stat, tw.factor_c_pvalue, tw.factor_c_df),
+    for name, f_val, p_val, q_val, df_tup in [
+        (tw.factor_a_name, tw.factor_a_stat, tw.factor_a_pvalue,
+         tw.factor_a_qvalue, tw.factor_a_df),
+        (tw.factor_b_name, tw.factor_b_stat, tw.factor_b_pvalue,
+         tw.factor_b_qvalue, tw.factor_b_df),
+        (tw.factor_c_name, tw.factor_c_stat, tw.factor_c_pvalue,
+         tw.factor_c_qvalue, tw.factor_c_df),
     ]:
         eta = tw.effect_sizes.get(name, np.nan)
-        parts.append(_format_effect(name, f_val, p_val, df_tup, eta))
+        parts.append(_format_effect(name, f_val, p_val, q_val, df_tup, eta))
 
     # Two-way interactions
-    for label, f_val, p_val, df_tup in [
-        (f'{tw.factor_a_name} \u00d7 {tw.factor_b_name}', tw.interaction_ab_stat, tw.interaction_ab_pvalue, tw.interaction_ab_df),
-        (f'{tw.factor_a_name} \u00d7 {tw.factor_c_name}', tw.interaction_ac_stat, tw.interaction_ac_pvalue, tw.interaction_ac_df),
-        (f'{tw.factor_b_name} \u00d7 {tw.factor_c_name}', tw.interaction_bc_stat, tw.interaction_bc_pvalue, tw.interaction_bc_df),
+    for label, f_val, p_val, q_val, df_tup in [
+        (f'{tw.factor_a_name} \u00d7 {tw.factor_b_name}', tw.interaction_ab_stat,
+         tw.interaction_ab_pvalue, tw.interaction_ab_qvalue, tw.interaction_ab_df),
+        (f'{tw.factor_a_name} \u00d7 {tw.factor_c_name}', tw.interaction_ac_stat,
+         tw.interaction_ac_pvalue, tw.interaction_ac_qvalue, tw.interaction_ac_df),
+        (f'{tw.factor_b_name} \u00d7 {tw.factor_c_name}', tw.interaction_bc_stat,
+         tw.interaction_bc_pvalue, tw.interaction_bc_qvalue, tw.interaction_bc_df),
     ]:
         eta_key = label.replace(' \u00d7 ', '\u00d7')
         eta = tw.effect_sizes.get(eta_key, np.nan)
-        parts.append(_format_interaction(label, f_val, p_val, df_tup, eta))
+        parts.append(_format_interaction(label, f_val, p_val, q_val, df_tup, eta))
 
     # Three-way interaction
     abc_label = f'{tw.factor_a_name} \u00d7 {tw.factor_b_name} \u00d7 {tw.factor_c_name}'
     abc_eta_key = f'{tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name}'
     eta_abc = tw.effect_sizes.get(abc_eta_key, np.nan)
     parts.append(_format_interaction(abc_label, tw.interaction_abc_stat,
-                                     tw.interaction_abc_pvalue, tw.interaction_abc_df, eta_abc))
+                                     tw.interaction_abc_pvalue,
+                                     tw.interaction_abc_qvalue,
+                                     tw.interaction_abc_df, eta_abc))
 
     # Post-hoc summary
     if tw.posthoc_results is not None and len(tw.posthoc_results) > 0:
