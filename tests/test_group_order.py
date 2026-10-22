@@ -259,7 +259,7 @@ if "sentinel_set" not in st.session_state:
     st.session_state.sentinel_set = True
     st.session_state.stats_computed = True
     st.session_state.report_generator = "cached-generator"
-    st.session_state.figures = {{"old": b"pdf"}}
+    st.session_state.heatmap_fig = b"old-png"
 sd = pd.DataFrame({{"Type": ["Ctrl", "Ctrl", "DDC", "DDC", "DDC + Ang 1-7 ", "DDC + Ang 1-7 "], "CA": range(6)}})
 processed = SimpleNamespace(sample_data=sd, structure=SimpleNamespace(group_col="Type", n_factors=0, factors={{}}))
 app.render_group_order_controls(processed)
@@ -288,7 +288,7 @@ def test_ui_apply_reorders_and_keeps_statistics_cached():
     assert at.session_state["level_orders"] == {"Type": ["DDC + Ang 1-7 ", "DDC", "Ctrl"]}
     assert at.session_state["stats_computed"] is True
     assert at.session_state["report_generator"] == "cached-generator"
-    assert at.session_state["figures"] == {}          # rendered figures are dropped
+    assert "heatmap_fig" not in at.session_state      # rendered figure cache is dropped
     _click(at, "Reset to default")
     assert at.session_state["level_orders"] == {}
 
@@ -300,4 +300,4 @@ def test_ui_rejects_duplicate_positions():
     _click(at, "Apply order")
     assert at.session_state["level_orders"] == {}
     assert any("repeated: 2" in w.value for w in at.warning)
-    assert at.session_state["figures"] == {"old": b"pdf"}   # nothing invalidated
+    assert at.session_state["heatmap_fig"] == b"old-png"   # nothing invalidated
