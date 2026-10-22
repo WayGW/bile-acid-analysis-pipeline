@@ -10,6 +10,7 @@ Generates organized Excel workbooks with:
 Also handles figure generation with significance annotations.
 """
 
+import copy
 import gc
 import pandas as pd
 import numpy as np
@@ -34,7 +35,10 @@ from config.bile_acid_species import (
 from modules.statistical_tests import (
     StatisticalAnalyzer, FullAnalysisResult,
     TwoWayResult, FullTwoWayAnalysisResult, format_twoway_apa,
-    ThreeWayResult, FullThreeWayAnalysisResult, format_threeway_apa
+    ThreeWayResult, FullThreeWayAnalysisResult, format_threeway_apa,
+    apply_fdr_to_oneway_results, apply_fdr_to_twoway_results,
+    apply_fdr_to_threeway_results, effect_pvalue,
+    any_twoway_effect_significant, any_threeway_effect_significant,
 )
 
 
@@ -83,6 +87,14 @@ class ComprehensiveAnalysisResults:
     # LOD exclusion tracking
     lod_excluded: Dict[str, float] = field(default_factory=dict)  # {analyte: lod_pct}
     lod_threshold: int = 50
+    aggregate_lod_threshold: float = 5.0
+    aggregate_lod_details: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    lod_warnings: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    # Cross-analyte FDR tracking
+    fdr_enabled: bool = False
+    fdr_method: str = "BH"
+    fdr_families: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -95,6 +107,7 @@ class AnalysisSheet:
     group_totals: pd.DataFrame
     group_percentages: pd.DataFrame
     statistical_result: Optional[FullAnalysisResult]
+    statistical_note: str = ""
 
 
 def format_apa_statistics(result: FullAnalysisResult) -> str:
@@ -123,11 +136,14 @@ def format_apa_statistics(result: FullAnalysisResult) -> str:
     else:
         stat_str = f"stat = {test.statistic:.2f}"
     
-    # Format p-value
+    # Format p-value and, when FDR is enabled, the BH q-value
     if test.pvalue < 0.001:
         p_str = "p < .001"
     else:
         p_str = f"p = {test.pvalue:.3f}"
+    q_str = ""
+    if test.qvalue is not None and np.isfinite(test.qvalue):
+        q_str = ", q < .001" if test.qvalue < 0.001 else f", q = {test.qvalue:.3f}"
     
     # Effect size
     if test.effect_size is not None:
@@ -141,9 +157,9 @@ def format_apa_statistics(result: FullAnalysisResult) -> str:
             effect_str = f"ε² = {test.effect_size:.2f}"
         else:
             effect_str = f"{test.effect_size_type} = {test.effect_size:.2f}"
-        return f"{stat_str}, {p_str}, {effect_str}"
+        return f"{stat_str}, {p_str}{q_str}, {effect_str}"
     
-    return f"{stat_str}, {p_str}"
+    return f"{stat_str}, {p_str}{q_str}"
 
 
 def get_significant_differences_summary(results: Dict[str, FullAnalysisResult]) -> pd.DataFrame:
@@ -155,7 +171,9 @@ def get_significant_differences_summary(results: Dict[str, FullAnalysisResult]) 
         
         n_sig_pairs = 0
         sig_pairs_str = ""
-        if result.posthoc_test and result.posthoc_test.pairwise_results is not None:
+        if (result.main_test.significant
+                and result.posthoc_test
+                and result.posthoc_test.pairwise_results is not None):
             sig_df = result.posthoc_test.pairwise_results[result.posthoc_test.pairwise_results['significant']]
             n_sig_pairs = len(sig_df)
             if n_sig_pairs > 0:
@@ -164,11 +182,13 @@ def get_significant_differences_summary(results: Dict[str, FullAnalysisResult]) 
                 if n_sig_pairs > 3:
                     sig_pairs_str += f" (+{n_sig_pairs - 3} more)"
         
+        qvalue = result.main_test.qvalue
         rows.append({
             'Variable': name,
             'Test': result.main_test.test_type.value,
             'Statistic': f"{result.main_test.statistic:.3f}",
             'P-value': f"{result.main_test.pvalue:.4f}",
+            'q-value (BH)': f"{qvalue:.4f}" if qvalue is not None and np.isfinite(qvalue) else 'N/A',
             'Significant': '✓' if result.main_test.significant else '',
             'Effect Size': f"{result.main_test.effect_size:.3f}" if result.main_test.effect_size else 'N/A',
             'Interpretation': result.main_test.effect_size_interpretation or '',
@@ -189,14 +209,22 @@ def get_twoway_differences_summary(results: Dict[str, FullTwoWayAnalysisResult])
         tw = result.twoway_result
 
         def _stars(p):
-            if np.isnan(p): return ''
+            if p is None or np.isnan(p): return ''
             if p < 0.001: return '***'
             if p < 0.01: return '**'
             if p < 0.05: return '*'
             return ''
 
+        def _fmt_q(q):
+            return f"{q:.4f}" if q is not None and np.isfinite(q) else 'N/A'
+
+        pa = effect_pvalue(tw, 'factor_a_pvalue', 'factor_a_qvalue')
+        pb = effect_pvalue(tw, 'factor_b_pvalue', 'factor_b_qvalue')
+        pab = effect_pvalue(tw, 'interaction_pvalue', 'interaction_qvalue')
+
         n_sig_posthoc = 0
-        if tw.posthoc_results is not None:
+        if (tw.posthoc_results is not None
+                and any(p < 0.05 for p in (pa, pb, pab))):
             n_sig_posthoc = tw.posthoc_results['significant'].sum()
 
         rows.append({
@@ -204,13 +232,16 @@ def get_twoway_differences_summary(results: Dict[str, FullTwoWayAnalysisResult])
             'Test': tw.test_type.value,
             f'{tw.factor_a_name} F': f"{tw.factor_a_stat:.2f}" if not np.isnan(tw.factor_a_stat) else 'N/A',
             f'{tw.factor_a_name} p': f"{tw.factor_a_pvalue:.4f}" if not np.isnan(tw.factor_a_pvalue) else 'N/A',
-            f'{tw.factor_a_name} sig': _stars(tw.factor_a_pvalue),
+            f'{tw.factor_a_name} q': _fmt_q(tw.factor_a_qvalue),
+            f'{tw.factor_a_name} sig': _stars(pa),
             f'{tw.factor_b_name} F': f"{tw.factor_b_stat:.2f}" if not np.isnan(tw.factor_b_stat) else 'N/A',
             f'{tw.factor_b_name} p': f"{tw.factor_b_pvalue:.4f}" if not np.isnan(tw.factor_b_pvalue) else 'N/A',
-            f'{tw.factor_b_name} sig': _stars(tw.factor_b_pvalue),
+            f'{tw.factor_b_name} q': _fmt_q(tw.factor_b_qvalue),
+            f'{tw.factor_b_name} sig': _stars(pb),
             'Interaction F': f"{tw.interaction_stat:.2f}" if not np.isnan(tw.interaction_stat) else 'N/A',
             'Interaction p': f"{tw.interaction_pvalue:.4f}" if not np.isnan(tw.interaction_pvalue) else 'N/A',
-            'Interaction sig': _stars(tw.interaction_pvalue),
+            'Interaction q': _fmt_q(tw.interaction_qvalue),
+            'Interaction sig': _stars(pab),
             'Post-hoc type': tw.posthoc_type,
             'Sig. post-hoc pairs': n_sig_posthoc,
         })
@@ -228,7 +259,7 @@ def get_threeway_differences_summary(results: Dict[str, FullThreeWayAnalysisResu
         tw = result.threeway_result
 
         def _stars(p):
-            if np.isnan(p): return ''
+            if p is None or np.isnan(p): return ''
             if p < 0.001: return '***'
             if p < 0.01: return '**'
             if p < 0.05: return '*'
@@ -238,10 +269,23 @@ def get_threeway_differences_summary(results: Dict[str, FullThreeWayAnalysisResu
             return f"{val:.2f}" if not np.isnan(val) else 'N/A'
 
         def _fmt_p(val):
-            return f"{val:.4f}" if not np.isnan(val) else 'N/A'
+            return f"{val:.4f}" if val is not None and not np.isnan(val) else 'N/A'
 
+        def _fmt_q(val):
+            return f"{val:.4f}" if val is not None and np.isfinite(val) else 'N/A'
+
+        effects = {
+            'A': effect_pvalue(tw, 'factor_a_pvalue', 'factor_a_qvalue'),
+            'B': effect_pvalue(tw, 'factor_b_pvalue', 'factor_b_qvalue'),
+            'C': effect_pvalue(tw, 'factor_c_pvalue', 'factor_c_qvalue'),
+            'AB': effect_pvalue(tw, 'interaction_ab_pvalue', 'interaction_ab_qvalue'),
+            'AC': effect_pvalue(tw, 'interaction_ac_pvalue', 'interaction_ac_qvalue'),
+            'BC': effect_pvalue(tw, 'interaction_bc_pvalue', 'interaction_bc_qvalue'),
+            'ABC': effect_pvalue(tw, 'interaction_abc_pvalue', 'interaction_abc_qvalue'),
+        }
         n_sig_posthoc = 0
-        if tw.posthoc_results is not None:
+        if (tw.posthoc_results is not None
+                and any(p < 0.05 for p in effects.values())):
             n_sig_posthoc = tw.posthoc_results['significant'].sum()
 
         rows.append({
@@ -249,17 +293,28 @@ def get_threeway_differences_summary(results: Dict[str, FullThreeWayAnalysisResu
             'Test': tw.test_type.value,
             f'{tw.factor_a_name} F': _fmt(tw.factor_a_stat),
             f'{tw.factor_a_name} p': _fmt_p(tw.factor_a_pvalue),
-            f'{tw.factor_a_name} sig': _stars(tw.factor_a_pvalue),
+            f'{tw.factor_a_name} q': _fmt_q(tw.factor_a_qvalue),
+            f'{tw.factor_a_name} sig': _stars(effects['A']),
             f'{tw.factor_b_name} F': _fmt(tw.factor_b_stat),
             f'{tw.factor_b_name} p': _fmt_p(tw.factor_b_pvalue),
-            f'{tw.factor_b_name} sig': _stars(tw.factor_b_pvalue),
+            f'{tw.factor_b_name} q': _fmt_q(tw.factor_b_qvalue),
+            f'{tw.factor_b_name} sig': _stars(effects['B']),
             f'{tw.factor_c_name} F': _fmt(tw.factor_c_stat),
             f'{tw.factor_c_name} p': _fmt_p(tw.factor_c_pvalue),
-            f'{tw.factor_c_name} sig': _stars(tw.factor_c_pvalue),
+            f'{tw.factor_c_name} q': _fmt_q(tw.factor_c_qvalue),
+            f'{tw.factor_c_name} sig': _stars(effects['C']),
             f'{tw.factor_a_name}\u00d7{tw.factor_b_name} p': _fmt_p(tw.interaction_ab_pvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_b_name} q': _fmt_q(tw.interaction_ab_qvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_b_name} sig': _stars(effects['AB']),
             f'{tw.factor_a_name}\u00d7{tw.factor_c_name} p': _fmt_p(tw.interaction_ac_pvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_c_name} q': _fmt_q(tw.interaction_ac_qvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_c_name} sig': _stars(effects['AC']),
             f'{tw.factor_b_name}\u00d7{tw.factor_c_name} p': _fmt_p(tw.interaction_bc_pvalue),
+            f'{tw.factor_b_name}\u00d7{tw.factor_c_name} q': _fmt_q(tw.interaction_bc_qvalue),
+            f'{tw.factor_b_name}\u00d7{tw.factor_c_name} sig': _stars(effects['BC']),
             f'{tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name} p': _fmt_p(tw.interaction_abc_pvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name} q': _fmt_q(tw.interaction_abc_qvalue),
+            f'{tw.factor_a_name}\u00d7{tw.factor_b_name}\u00d7{tw.factor_c_name} sig': _stars(effects['ABC']),
             'Post-hoc type': tw.posthoc_type,
             'Sig. post-hoc pairs': n_sig_posthoc,
         })
@@ -349,6 +404,28 @@ class ExcelReportGenerator:
             'get_columns': lambda available: [c for c in get_secondary() if c in available and c in get_unconjugated()],
         },
     }
+
+    # Category sheets reuse the corresponding totals result instead of running
+    # an identical test a second time.
+    CATEGORY_TO_TOTAL = {
+        'Total_All_BAs': 'total_all',
+        'Total_Conjugated': 'total_conjugated',
+        'Total_Unconjugated': 'total_unconjugated',
+        'Glycine_Conjugated': 'glycine_conjugated',
+        'Taurine_Conjugated': 'taurine_conjugated',
+        'Sulfated': 'sulfated',
+        'Total_Primary': 'total_primary',
+        'Total_Secondary': 'total_secondary',
+        'Oxidized_Keto': 'oxidized',
+        'Epimerized_Iso': 'epimerized',
+        'Nor_Bile_Acids': 'nor_bile_acids',
+        '12alpha_Hydroxylated': 'total_12alpha_hydroxylated',
+        'Non_12alpha_Hydroxylated': 'total_non12alpha_hydroxylated',
+        'Primary_Conjugated': 'primary_conjugated',
+        'Primary_Unconjugated': 'primary_unconjugated',
+        'Secondary_Conjugated': 'secondary_conjugated',
+        'Secondary_Unconjugated': 'secondary_unconjugated',
+    }
     
     def __init__(
         self,
@@ -369,8 +446,12 @@ class ExcelReportGenerator:
         # LOD exclusion settings
         analyte_lod_counts: Optional[Dict[str, int]] = None,
         analyte_lod_rows: Optional[Dict[str, List[int]]] = None,
+        analyte_lod_values: Optional[Dict[str, float]] = None,
         n_samples: int = 0,
         lod_threshold: int = 50,
+        aggregate_lod_threshold: float = 5.0,
+        dilution_factor: float = 1.0,
+        fdr_enabled: bool = True,
         units: str = "nmol/L",
     ):
         """
@@ -389,8 +470,13 @@ class ExcelReportGenerator:
             n_factors: Number of factors (0=auto, 1=one-way, 2=two-way)
             analyte_lod_counts: Dict of {analyte_name: count_of_lod_replaced_values}
             analyte_lod_rows: Dict of {analyte_name: [row_indices_with_lod_replacement]}
+            analyte_lod_values: Resolved per-analyte LOD values (before dilution)
             n_samples: Total number of samples (for computing LOD percentages)
             lod_threshold: Exclude analytes with >= this % LOD-replaced from stats (0=disable)
+            aggregate_lod_threshold: Exclude aggregate totals whose maximum group
+                LOD-bound replacement share is >= this % (0=disable)
+            dilution_factor: Multiplier applied to concentrations after LOD replacement
+            fdr_enabled: Apply Benjamini-Hochberg FDR across analytes in each family
         """
         self.data = data  # Reference only — avoid copy to save memory on Cloud
         self.group_col = group_col
@@ -410,9 +496,17 @@ class ExcelReportGenerator:
         # LOD exclusion settings
         self.analyte_lod_counts = analyte_lod_counts or {}
         self.analyte_lod_rows = analyte_lod_rows or {}
+        self.analyte_lod_values = analyte_lod_values or {}
         self.n_samples = n_samples if n_samples > 0 else len(data)
         self.lod_threshold = lod_threshold
+        self.aggregate_lod_threshold = float(aggregate_lod_threshold)
+        self.dilution_factor = float(dilution_factor)
+        self.fdr_enabled = bool(fdr_enabled)
         self.lod_excluded: Dict[str, float] = {}  # {analyte: lod_pct} for excluded analytes
+        self.lod_exclusion_details: Dict[str, Dict[str, Any]] = {}
+        self.lod_warnings: Dict[str, Dict[str, Any]] = {}
+        self._aggregate_lod_cache: Dict[str, Dict[str, Any]] = {}
+        self._totals_attempted = False
         self.units = units
         # Figure display order {column: [levels]}, set by the app before export.
         # Display only: recorded in the Overview sheet, never used by statistics.
@@ -473,50 +567,158 @@ class ExcelReportGenerator:
         self.lod_excluded[col] = round(lod_pct, 1)
         return True
     
+    def _category_members(self, category_col: str) -> List[str]:
+        """Return constituent bile acids for a totals key or category sheet."""
+        lookup = self.CATEGORY_TO_TOTAL.get(category_col, category_col)
+        if lookup == 'total_all':
+            return [c for c in self.ba_cols if c in self.data.columns]
+        if lookup in ANALYSIS_GROUPS:
+            return [c for c in ANALYSIS_GROUPS[lookup] if c in self.ba_cols]
+        return []
+
+    def _aggregate_lod_burden_info(
+        self,
+        category_col: str,
+        data: Optional[pd.DataFrame] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Compute LOD-bound replacement burden for an aggregate.
+
+        The burden is ``R / (O + R)`` where ``O`` is the observed (non-below-LOD)
+        contribution and ``R`` is the contribution assigned to below-LOD cells
+        at ``LOD × dilution_factor``. The aggregate decision uses the maximum
+        group burden; per-sample burdens are retained for the report.
+        """
+        lookup = self.CATEGORY_TO_TOTAL.get(category_col, category_col)
+        if lookup in self._aggregate_lod_cache:
+            return self._aggregate_lod_cache[lookup]
+
+        members = self._category_members(lookup)
+        if not members:
+            return None
+
+        frame = self._get_valid_data() if data is None else data
+        if self.group_col not in frame.columns:
+            return None
+
+        observed = pd.Series(0.0, index=frame.index, dtype=float)
+        lod_bound = pd.Series(0.0, index=frame.index, dtype=float)
+        n_replaced_cells = 0
+        missing_lod_values = []
+
+        for ba in members:
+            if ba not in frame.columns:
+                continue
+            values = pd.to_numeric(frame[ba], errors='coerce')
+            lod_rows = set(self.analyte_lod_rows.get(ba, []))
+            replaced_mask = values.index.isin(lod_rows)
+            observed = observed.add(values.where(~replaced_mask, 0.0).fillna(0.0), fill_value=0.0)
+
+            lod_value = self.analyte_lod_values.get(ba)
+            if lod_value is None:
+                missing_lod_values.append(ba)
+                lod_value = 0.0
+            contribution = float(lod_value) * self.dilution_factor
+            lod_bound = lod_bound.add(
+                pd.Series(np.where(replaced_mask, contribution, 0.0), index=frame.index),
+                fill_value=0.0,
+            )
+            n_replaced_cells += int(replaced_mask.sum())
+
+        aggregate = observed + lod_bound
+        burden = lod_bound.divide(aggregate.where(aggregate > 0))
+
+        sample_frame = pd.DataFrame({
+            'sample_id': (
+                frame[self.sample_id_col].astype(str)
+                if self.sample_id_col and self.sample_id_col in frame.columns
+                else frame.index.astype(str)
+            ),
+            'group': frame[self.group_col].astype(str),
+            'observed_contribution': observed,
+            'lod_bound_contribution': lod_bound,
+            'aggregate_contribution': aggregate,
+            'lod_burden_fraction': burden,
+            'lod_burden_pct': burden * 100.0,
+        }, index=frame.index)
+
+        group_sums = sample_frame.groupby('group', dropna=False)[
+            ['observed_contribution', 'lod_bound_contribution']
+        ].sum()
+        group_fractions = group_sums['lod_bound_contribution'].divide(
+            group_sums.sum(axis=1).where(group_sums.sum(axis=1) > 0)
+        )
+        group_burdens = {
+            str(group): float(value)
+            for group, value in group_fractions.items()
+            if pd.notna(value)
+        }
+
+        total_observed = float(observed.sum())
+        total_bound = float(lod_bound.sum())
+        overall = (total_bound / (total_observed + total_bound)
+                   if (total_observed + total_bound) > 0 else np.nan)
+        max_group = max(group_burdens.values()) if group_burdens else overall
+
+        info = {
+            'category': lookup,
+            'members': members,
+            'overall_fraction': float(overall) if pd.notna(overall) else np.nan,
+            'max_group_fraction': float(max_group) if pd.notna(max_group) else np.nan,
+            'group_fractions': group_burdens,
+            'sample_frame': sample_frame,
+            'n_replaced_cells': n_replaced_cells,
+            'missing_lod_values': missing_lod_values,
+            'threshold_pct': self.aggregate_lod_threshold,
+        }
+        self._aggregate_lod_cache[lookup] = info
+        self.lod_exclusion_details[lookup] = info
+        return info
+
     def _should_exclude_category_for_lod(self, category_col: str, data: pd.DataFrame = None) -> bool:
-        """
-        Check if a totals category should be excluded from statistical testing
-        based on the LOD status of its constituent bile acids.
+        """Apply the aggregate LOD replacement-burden rule.
 
-        A category is excluded if the proportion of its constituent BAs that were
-        LOD-excluded (or would be) meets or exceeds the LOD threshold. This prevents
-        categories like nor_bile_acids from showing significance when nearly all
-        constituent BAs are LOD-replaced.
+        ``total_all`` is never excluded; it receives a warning when its maximum
+        group burden reaches the aggregate threshold. Other aggregates are
+        excluded when the maximum group burden is at or above that threshold.
         """
-        if self.lod_threshold <= 0:
+        lookup = self.CATEGORY_TO_TOTAL.get(category_col, category_col)
+        info = self._aggregate_lod_burden_info(lookup, data)
+        if info is None:
             return False
 
-        # Look up constituent BAs for this category
-        if category_col == 'total_all':
-            constituent_bas = [c for c in self.ba_cols if c in (self.data.columns if data is None else data.columns)]
-        elif category_col in ANALYSIS_GROUPS:
-            constituent_bas = [c for c in ANALYSIS_GROUPS[category_col] if c in self.ba_cols]
-        else:
-            return False  # Unknown category, don't exclude
+        burden_pct = info['max_group_fraction'] * 100.0
+        if pd.isna(burden_pct):
+            burden_pct = 0.0
+        info['max_group_burden_pct'] = round(float(burden_pct), 2)
+        info['threshold_pct'] = self.aggregate_lod_threshold
 
-        if not constituent_bas:
+        if lookup == 'total_all':
+            if (self.aggregate_lod_threshold > 0
+                    and burden_pct >= self.aggregate_lod_threshold):
+                self.lod_warnings[lookup] = info
             return False
 
-        # Count how many constituents are LOD-excluded or would be
-        n_excluded = 0
-        for ba in constituent_bas:
-            if ba in self.lod_excluded:
-                n_excluded += 1
-            elif self._should_exclude_for_lod(ba, data):
-                # This BA wasn't checked yet but would be excluded
-                n_excluded += 1
-
-        excluded_pct = (n_excluded / len(constituent_bas)) * 100
-        if excluded_pct >= self.lod_threshold:
-            self.lod_excluded[category_col] = round(excluded_pct, 1)
+        if self.aggregate_lod_threshold > 0 and burden_pct >= self.aggregate_lod_threshold:
+            self.lod_excluded[lookup] = round(float(burden_pct), 2)
+            info['excluded'] = True
             return True
 
+        info['excluded'] = False
         return False
 
     def _finalize_results(self) -> ComprehensiveAnalysisResults:
-        """Attach LOD exclusion info to results before returning."""
+        """Attach LOD/FDR metadata to results before returning."""
         self.results.lod_excluded = self.lod_excluded.copy()
         self.results.lod_threshold = self.lod_threshold
+        self.results.aggregate_lod_threshold = self.aggregate_lod_threshold
+        self.results.aggregate_lod_details = {
+            key: info for key, info in self._aggregate_lod_cache.items()
+        }
+        self.results.lod_warnings = {
+            key: info for key, info in self.lod_warnings.items()
+        }
+        self.results.fdr_enabled = self.fdr_enabled
+        self.results.fdr_method = 'BH'
         return self.results
 
     def _get_valid_data(self) -> pd.DataFrame:
@@ -591,7 +793,85 @@ class ExcelReportGenerator:
         data_copy[log_col] = self._log_transform_column(data_copy, col)
         return data_copy, log_col
 
+    # --- FDR orchestration ------------------------------------------------
+
+    def _apply_oneway_fdr(self, results, family: str) -> int:
+        if not self.fdr_enabled:
+            return 0
+        size = apply_fdr_to_oneway_results(results, self.alpha, family)
+        self.results.fdr_families[family] = size
+        return size
+
+    def _apply_twoway_fdr(self, results, family_prefix: str):
+        if not self.fdr_enabled:
+            return
+        sizes = apply_fdr_to_twoway_results(results, self.alpha, family_prefix)
+        self.results.fdr_families.update(sizes)
+
+    def _apply_threeway_fdr(self, results, family_prefix: str):
+        if not self.fdr_enabled:
+            return
+        sizes = apply_fdr_to_threeway_results(results, self.alpha, family_prefix)
+        self.results.fdr_families.update(sizes)
+
+    def _run_oneway_posthoc_if_needed(self, result, data, value_col: str):
+        if result is None or result.main_test is None:
+            return
+        if result.posthoc_test is not None:
+            return
+        if not result.main_test.significant:
+            return
+        groups = data[self.group_col].dropna().unique()
+        if len(groups) <= 2:
+            return
+        try:
+            result.posthoc_test = self.analyzer.run_posthoc(
+                data, value_col, self.group_col, result.assumptions
+            )
+        except Exception as e:
+            print(f"Could not run post-hoc for {value_col}: {e}")
+
+    def _run_twoway_posthoc_if_needed(self, result, data, value_col,
+                                      fa_col, fb_col):
+        if result is None or not any_twoway_effect_significant(result, self.alpha):
+            return
+        try:
+            self.analyzer.run_twoway_posthoc(
+                data, value_col, fa_col, fb_col, result
+            )
+        except Exception as e:
+            print(f"Could not run two-way post-hoc for {value_col}: {e}")
+
+    def _run_threeway_posthoc_if_needed(self, result, data, value_col,
+                                        fa_col, fb_col, fc_col):
+        if result is None or not any_threeway_effect_significant(result, self.alpha):
+            return
+        try:
+            self.analyzer.run_threeway_posthoc(
+                data, value_col, fa_col, fb_col, fc_col, result
+            )
+        except Exception as e:
+            print(f"Could not run three-way post-hoc for {value_col}: {e}")
+
     # --- ONE-WAY sections ---
+
+    def _ensure_totals_for_categories(self):
+        """Compute totals once so category sheets can reuse their statistics."""
+        if self.totals is None or self._totals_attempted:
+            return
+        if (self.results.totals_results
+                or self.results.twoway_totals
+                or self.results.threeway_totals):
+            self._totals_attempted = True
+            return
+        self._totals_attempted = True
+        valid_data = self._get_valid_data()
+        if self.n_factors == 3 and len(self.factors) >= 3:
+            self._run_threeway_section(valid_data, 'totals')
+        elif self.n_factors == 2 and len(self.factors) >= 2:
+            self._run_twoway_section(valid_data, 'totals')
+        else:
+            self._run_oneway_section(valid_data, 'totals')
 
     def _run_oneway_section(self, valid_data, section):
         if section == 'individual_ba':
@@ -601,17 +881,33 @@ class ExcelReportGenerator:
                     if self._should_exclude_for_lod(ba, valid_data):
                         continue
                     try:
-                        result = self.analyzer.analyze(valid_data, ba, self.group_col)
+                        result = self.analyzer.analyze(
+                            valid_data, ba, self.group_col, run_posthoc=False
+                        )
                         self.results.individual_ba_results[ba] = result
                     except Exception as e:
                         print(f"Could not analyze {ba}: {e}")
                     try:
                         log_data, log_col = self._prepare_log_data(valid_data, ba)
-                        log_result = self.analyzer.analyze(log_data, log_col, self.group_col)
+                        log_result = self.analyzer.analyze(
+                            log_data, log_col, self.group_col, run_posthoc=False
+                        )
                         log_result.variable_name = ba
                         self.results.log_individual_ba_results[ba] = log_result
                     except Exception as e:
                         print(f"Could not analyze {ba} (log₁₀): {e}")
+
+            self._apply_oneway_fdr(
+                self.results.individual_ba_results, 'oneway:individual_ba:raw'
+            )
+            self._apply_oneway_fdr(
+                self.results.log_individual_ba_results, 'oneway:individual_ba:log10'
+            )
+            for ba, result in self.results.individual_ba_results.items():
+                self._run_oneway_posthoc_if_needed(result, valid_data, ba)
+            for ba, log_result in self.results.log_individual_ba_results.items():
+                log_data, log_col = self._prepare_log_data(valid_data, ba)
+                self._run_oneway_posthoc_if_needed(log_result, log_data, log_col)
             self._log(f"  Done: {len(self.results.individual_ba_results)} individual BAs analyzed")
 
         elif section == 'totals':
@@ -623,17 +919,30 @@ class ExcelReportGenerator:
                         if self._should_exclude_category_for_lod(col, valid_data):
                             continue
                         try:
-                            result = self.analyzer.analyze(combined, col, self.group_col)
+                            result = self.analyzer.analyze(
+                                combined, col, self.group_col, run_posthoc=False
+                            )
                             self.results.totals_results[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col}: {e}")
                         try:
                             log_data, log_col = self._prepare_log_data(combined, col)
-                            log_result = self.analyzer.analyze(log_data, log_col, self.group_col)
+                            log_result = self.analyzer.analyze(
+                                log_data, log_col, self.group_col, run_posthoc=False
+                            )
                             log_result.variable_name = col
                             self.results.log_totals_results[col] = log_result
                         except Exception as e:
                             print(f"Could not analyze {col} (log₁₀): {e}")
+
+                self._apply_oneway_fdr(self.results.totals_results, 'oneway:totals:raw')
+                self._apply_oneway_fdr(self.results.log_totals_results, 'oneway:totals:log10')
+                for col, result in self.results.totals_results.items():
+                    self._run_oneway_posthoc_if_needed(result, combined, col)
+                for col, log_result in self.results.log_totals_results.items():
+                    log_data, log_col = self._prepare_log_data(combined, col)
+                    self._run_oneway_posthoc_if_needed(log_result, log_data, log_col)
+                del combined
                 self._log(f"  Done: {len(self.results.totals_results)} totals analyzed")
 
         elif section == 'ratios':
@@ -643,17 +952,30 @@ class ExcelReportGenerator:
                 for col in self.ratios.columns:
                     if not combined[col].isna().all():
                         try:
-                            result = self.analyzer.analyze(combined, col, self.group_col)
+                            result = self.analyzer.analyze(
+                                combined, col, self.group_col, run_posthoc=False
+                            )
                             self.results.ratios_results[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col}: {e}")
                         try:
                             log_data, log_col = self._prepare_log_data(combined, col)
-                            log_result = self.analyzer.analyze(log_data, log_col, self.group_col)
+                            log_result = self.analyzer.analyze(
+                                log_data, log_col, self.group_col, run_posthoc=False
+                            )
                             log_result.variable_name = col
                             self.results.log_ratios_results[col] = log_result
                         except Exception as e:
                             print(f"Could not analyze {col} (log₁₀): {e}")
+
+                self._apply_oneway_fdr(self.results.ratios_results, 'oneway:ratios:raw')
+                self._apply_oneway_fdr(self.results.log_ratios_results, 'oneway:ratios:log10')
+                for col, result in self.results.ratios_results.items():
+                    self._run_oneway_posthoc_if_needed(result, combined, col)
+                for col, log_result in self.results.log_ratios_results.items():
+                    log_data, log_col = self._prepare_log_data(combined, col)
+                    self._run_oneway_posthoc_if_needed(log_result, log_data, log_col)
+                del combined
                 self._log(f"  Done: {len(self.results.ratios_results)} ratios analyzed")
 
         elif section == 'percentages':
@@ -666,19 +988,29 @@ class ExcelReportGenerator:
                         if base_ba in self.lod_excluded or self._should_exclude_for_lod(base_ba, valid_data):
                             continue
                         try:
-                            result = self.analyzer.analyze(combined, col, self.group_col)
+                            result = self.analyzer.analyze(
+                                combined, col, self.group_col, run_posthoc=False
+                            )
                             self.results.percentages_results[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col}: {e}")
+
+                self._apply_oneway_fdr(
+                    self.results.percentages_results, 'oneway:percentages:raw'
+                )
+                for col, result in self.results.percentages_results.items():
+                    self._run_oneway_posthoc_if_needed(result, combined, col)
+                del combined
                 self._log(f"  Done: {len(self.results.percentages_results)} percentages analyzed")
 
         elif section == 'categories':
-            self._log("Running one-way ANOVA for category sheets...")
+            self._log("Building category sheets from totals results...")
+            self._ensure_totals_for_categories()
             self.generate_all_sheets()
             for cat_name, sheet in self.analysis_sheets.items():
                 if sheet.statistical_result:
                     self.results.category_results[cat_name] = sheet.statistical_result
-            self._log(f"  Done: {len(self.results.category_results)} categories analyzed")
+            self._log(f"  Done: {len(self.results.category_results)} categories available")
 
         elif section == 'hydrophobicity':
             if self.hydrophobicity is not None:
@@ -687,10 +1019,19 @@ class ExcelReportGenerator:
                 for col in self.hydrophobicity.columns:
                     if not combined[col].isna().all():
                         try:
-                            result = self.analyzer.analyze(combined, col, self.group_col)
+                            result = self.analyzer.analyze(
+                                combined, col, self.group_col, run_posthoc=False
+                            )
                             self.results.hydrophobicity_results[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col}: {e}")
+
+                self._apply_oneway_fdr(
+                    self.results.hydrophobicity_results, 'oneway:hydrophobicity:raw'
+                )
+                for col, result in self.results.hydrophobicity_results.items():
+                    self._run_oneway_posthoc_if_needed(result, combined, col)
+                del combined
                 self._log(f"  Done: {len(self.results.hydrophobicity_results)} hydrophobicity metrics analyzed")
 
     # --- TWO-WAY sections ---
@@ -712,7 +1053,8 @@ class ExcelReportGenerator:
                         continue
                     try:
                         result = self.analyzer.analyze_twoway(
-                            valid_data, ba, fa_col, fb_col, fa_name, fb_name
+                            valid_data, ba, fa_col, fb_col, fa_name, fb_name,
+                            run_posthoc=False,
                         )
                         self.results.twoway_individual_ba[ba] = result
                     except Exception as e:
@@ -720,7 +1062,8 @@ class ExcelReportGenerator:
                     try:
                         log_data, log_col = self._prepare_log_data(valid_data, ba)
                         log_result = self.analyzer.analyze_twoway(
-                            log_data, log_col, fa_col, fb_col, fa_name, fb_name
+                            log_data, log_col, fa_col, fb_col, fa_name, fb_name,
+                            run_posthoc=False,
                         )
                         log_result.variable_name = ba
                         self.results.log_twoway_individual_ba[ba] = log_result
@@ -728,6 +1071,22 @@ class ExcelReportGenerator:
                         print(f"Could not analyze {ba} (two-way log₁₀): {e}")
                     if (i + 1) % 20 == 0:
                         gc.collect()
+
+            self._apply_twoway_fdr(
+                self.results.twoway_individual_ba, 'twoway:individual_ba:raw'
+            )
+            self._apply_twoway_fdr(
+                self.results.log_twoway_individual_ba, 'twoway:individual_ba:log10'
+            )
+            for ba, result in self.results.twoway_individual_ba.items():
+                self._run_twoway_posthoc_if_needed(
+                    result, valid_data, ba, fa_col, fb_col
+                )
+            for ba, log_result in self.results.log_twoway_individual_ba.items():
+                log_data, log_col = self._prepare_log_data(valid_data, ba)
+                self._run_twoway_posthoc_if_needed(
+                    log_result, log_data, log_col, fa_col, fb_col
+                )
             gc.collect()
             self._log(f"  Done: {len(self.results.twoway_individual_ba)} individual BAs analyzed")
 
@@ -741,7 +1100,8 @@ class ExcelReportGenerator:
                             continue
                         try:
                             result = self.analyzer.analyze_twoway(
-                                combined, col, fa_col, fb_col, fa_name, fb_name
+                                combined, col, fa_col, fb_col, fa_name, fb_name,
+                                run_posthoc=False,
                             )
                             self.results.twoway_totals[col] = result
                         except Exception as e:
@@ -749,12 +1109,27 @@ class ExcelReportGenerator:
                         try:
                             log_data, log_col = self._prepare_log_data(combined, col)
                             log_result = self.analyzer.analyze_twoway(
-                                log_data, log_col, fa_col, fb_col, fa_name, fb_name
+                                log_data, log_col, fa_col, fb_col, fa_name, fb_name,
+                                run_posthoc=False,
                             )
                             log_result.variable_name = col
                             self.results.log_twoway_totals[col] = log_result
                         except Exception as e:
                             print(f"Could not analyze {col} (two-way log₁₀): {e}")
+
+                self._apply_twoway_fdr(self.results.twoway_totals, 'twoway:totals:raw')
+                self._apply_twoway_fdr(
+                    self.results.log_twoway_totals, 'twoway:totals:log10'
+                )
+                for col, result in self.results.twoway_totals.items():
+                    self._run_twoway_posthoc_if_needed(
+                        result, combined, col, fa_col, fb_col
+                    )
+                for col, log_result in self.results.log_twoway_totals.items():
+                    log_data, log_col = self._prepare_log_data(combined, col)
+                    self._run_twoway_posthoc_if_needed(
+                        log_result, log_data, log_col, fa_col, fb_col
+                    )
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.twoway_totals)} totals analyzed")
@@ -767,7 +1142,8 @@ class ExcelReportGenerator:
                     if not combined[col].isna().all():
                         try:
                             result = self.analyzer.analyze_twoway(
-                                combined, col, fa_col, fb_col, fa_name, fb_name
+                                combined, col, fa_col, fb_col, fa_name, fb_name,
+                                run_posthoc=False,
                             )
                             self.results.twoway_ratios[col] = result
                         except Exception as e:
@@ -775,12 +1151,27 @@ class ExcelReportGenerator:
                         try:
                             log_data, log_col = self._prepare_log_data(combined, col)
                             log_result = self.analyzer.analyze_twoway(
-                                log_data, log_col, fa_col, fb_col, fa_name, fb_name
+                                log_data, log_col, fa_col, fb_col, fa_name, fb_name,
+                                run_posthoc=False,
                             )
                             log_result.variable_name = col
                             self.results.log_twoway_ratios[col] = log_result
                         except Exception as e:
                             print(f"Could not analyze {col} (two-way log₁₀): {e}")
+
+                self._apply_twoway_fdr(self.results.twoway_ratios, 'twoway:ratios:raw')
+                self._apply_twoway_fdr(
+                    self.results.log_twoway_ratios, 'twoway:ratios:log10'
+                )
+                for col, result in self.results.twoway_ratios.items():
+                    self._run_twoway_posthoc_if_needed(
+                        result, combined, col, fa_col, fb_col
+                    )
+                for col, log_result in self.results.log_twoway_ratios.items():
+                    log_data, log_col = self._prepare_log_data(combined, col)
+                    self._run_twoway_posthoc_if_needed(
+                        log_result, log_data, log_col, fa_col, fb_col
+                    )
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.twoway_ratios)} ratios analyzed")
@@ -796,22 +1187,32 @@ class ExcelReportGenerator:
                             continue
                         try:
                             result = self.analyzer.analyze_twoway(
-                                combined, col, fa_col, fb_col, fa_name, fb_name
+                                combined, col, fa_col, fb_col, fa_name, fb_name,
+                                run_posthoc=False,
                             )
                             self.results.twoway_percentages[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col} (two-way): {e}")
+
+                self._apply_twoway_fdr(
+                    self.results.twoway_percentages, 'twoway:percentages:raw'
+                )
+                for col, result in self.results.twoway_percentages.items():
+                    self._run_twoway_posthoc_if_needed(
+                        result, combined, col, fa_col, fb_col
+                    )
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.twoway_percentages)} percentages analyzed")
 
         elif section == 'categories':
-            self._log("Running two-way ANOVA for category sheets...")
+            self._log("Building two-way category sheets from totals results...")
+            self._ensure_totals_for_categories()
             self.generate_all_sheets()
             for cat_name, sheet in self.analysis_sheets.items():
                 if sheet.statistical_result:
                     self.results.category_results[cat_name] = sheet.statistical_result
-            self._log(f"  Done: {len(self.results.category_results)} categories analyzed")
+            self._log(f"  Done: {len(self.results.category_results)} categories available")
 
         elif section == 'hydrophobicity':
             if self.hydrophobicity is not None:
@@ -821,11 +1222,22 @@ class ExcelReportGenerator:
                     if not combined[col].isna().all():
                         try:
                             result = self.analyzer.analyze_twoway(
-                                combined, col, fa_col, fb_col, fa_name, fb_name
+                                combined, col, fa_col, fb_col, fa_name, fb_name,
+                                run_posthoc=False,
                             )
                             self.results.twoway_hydrophobicity[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col} (two-way): {e}")
+
+                self._apply_twoway_fdr(
+                    self.results.twoway_hydrophobicity, 'twoway:hydrophobicity:raw'
+                )
+                for col, result in self.results.twoway_hydrophobicity.items():
+                    self._run_twoway_posthoc_if_needed(
+                        result, combined, col, fa_col, fb_col
+                    )
+                del combined
+                gc.collect()
                 self._log(f"  Done: {len(self.results.twoway_hydrophobicity)} hydrophobicity metrics analyzed")
 
     # --- THREE-WAY sections ---
@@ -848,7 +1260,8 @@ class ExcelReportGenerator:
                         continue
                     try:
                         result = self.analyzer.analyze_threeway(
-                            valid_data, ba, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                            valid_data, ba, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name,
+                            run_posthoc=False,
                         )
                         self.results.threeway_individual_ba[ba] = result
                     except Exception as e:
@@ -856,7 +1269,8 @@ class ExcelReportGenerator:
                     try:
                         log_data, log_col = self._prepare_log_data(valid_data, ba)
                         log_result = self.analyzer.analyze_threeway(
-                            log_data, log_col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                            log_data, log_col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name,
+                            run_posthoc=False,
                         )
                         log_result.variable_name = ba
                         self.results.log_threeway_individual_ba[ba] = log_result
@@ -865,6 +1279,22 @@ class ExcelReportGenerator:
                     if (i + 1) % 20 == 0:
                         self._log(f"  Progress: {i + 1}/{len(self.ba_cols)} BAs...")
                         gc.collect()
+
+            self._apply_threeway_fdr(
+                self.results.threeway_individual_ba, 'threeway:individual_ba:raw'
+            )
+            self._apply_threeway_fdr(
+                self.results.log_threeway_individual_ba, 'threeway:individual_ba:log10'
+            )
+            for ba, result in self.results.threeway_individual_ba.items():
+                self._run_threeway_posthoc_if_needed(
+                    result, valid_data, ba, fa_col, fb_col, fc_col
+                )
+            for ba, log_result in self.results.log_threeway_individual_ba.items():
+                log_data, log_col = self._prepare_log_data(valid_data, ba)
+                self._run_threeway_posthoc_if_needed(
+                    log_result, log_data, log_col, fa_col, fb_col, fc_col
+                )
             gc.collect()
             self._log(f"  Done: {len(self.results.threeway_individual_ba)} individual BAs analyzed")
 
@@ -878,7 +1308,8 @@ class ExcelReportGenerator:
                             continue
                         try:
                             result = self.analyzer.analyze_threeway(
-                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name,
+                                run_posthoc=False,
                             )
                             self.results.threeway_totals[col] = result
                         except Exception as e:
@@ -886,12 +1317,29 @@ class ExcelReportGenerator:
                         try:
                             log_data, log_col = self._prepare_log_data(combined, col)
                             log_result = self.analyzer.analyze_threeway(
-                                log_data, log_col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                                log_data, log_col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name,
+                                run_posthoc=False,
                             )
                             log_result.variable_name = col
                             self.results.log_threeway_totals[col] = log_result
                         except Exception as e:
                             print(f"Could not analyze {col} (three-way log₁₀): {e}")
+
+                self._apply_threeway_fdr(
+                    self.results.threeway_totals, 'threeway:totals:raw'
+                )
+                self._apply_threeway_fdr(
+                    self.results.log_threeway_totals, 'threeway:totals:log10'
+                )
+                for col, result in self.results.threeway_totals.items():
+                    self._run_threeway_posthoc_if_needed(
+                        result, combined, col, fa_col, fb_col, fc_col
+                    )
+                for col, log_result in self.results.log_threeway_totals.items():
+                    log_data, log_col = self._prepare_log_data(combined, col)
+                    self._run_threeway_posthoc_if_needed(
+                        log_result, log_data, log_col, fa_col, fb_col, fc_col
+                    )
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.threeway_totals)} totals analyzed")
@@ -904,7 +1352,8 @@ class ExcelReportGenerator:
                     if not combined[col].isna().all():
                         try:
                             result = self.analyzer.analyze_threeway(
-                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name,
+                                run_posthoc=False,
                             )
                             self.results.threeway_ratios[col] = result
                         except Exception as e:
@@ -912,12 +1361,29 @@ class ExcelReportGenerator:
                         try:
                             log_data, log_col = self._prepare_log_data(combined, col)
                             log_result = self.analyzer.analyze_threeway(
-                                log_data, log_col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                                log_data, log_col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name,
+                                run_posthoc=False,
                             )
                             log_result.variable_name = col
                             self.results.log_threeway_ratios[col] = log_result
                         except Exception as e:
                             print(f"Could not analyze {col} (three-way log₁₀): {e}")
+
+                self._apply_threeway_fdr(
+                    self.results.threeway_ratios, 'threeway:ratios:raw'
+                )
+                self._apply_threeway_fdr(
+                    self.results.log_threeway_ratios, 'threeway:ratios:log10'
+                )
+                for col, result in self.results.threeway_ratios.items():
+                    self._run_threeway_posthoc_if_needed(
+                        result, combined, col, fa_col, fb_col, fc_col
+                    )
+                for col, log_result in self.results.log_threeway_ratios.items():
+                    log_data, log_col = self._prepare_log_data(combined, col)
+                    self._run_threeway_posthoc_if_needed(
+                        log_result, log_data, log_col, fa_col, fb_col, fc_col
+                    )
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.threeway_ratios)} ratios analyzed")
@@ -933,22 +1399,32 @@ class ExcelReportGenerator:
                             continue
                         try:
                             result = self.analyzer.analyze_threeway(
-                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name,
+                                run_posthoc=False,
                             )
                             self.results.threeway_percentages[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col} (three-way): {e}")
+
+                self._apply_threeway_fdr(
+                    self.results.threeway_percentages, 'threeway:percentages:raw'
+                )
+                for col, result in self.results.threeway_percentages.items():
+                    self._run_threeway_posthoc_if_needed(
+                        result, combined, col, fa_col, fb_col, fc_col
+                    )
                 del combined
                 gc.collect()
                 self._log(f"  Done: {len(self.results.threeway_percentages)} percentages analyzed")
 
         elif section == 'categories':
-            self._log("Running three-way ANOVA for category sheets...")
+            self._log("Building three-way category sheets from totals results...")
+            self._ensure_totals_for_categories()
             self.generate_all_sheets()
             for cat_name, sheet in self.analysis_sheets.items():
                 if sheet.statistical_result:
                     self.results.category_results[cat_name] = sheet.statistical_result
-            self._log(f"  Done: {len(self.results.category_results)} categories analyzed")
+            self._log(f"  Done: {len(self.results.category_results)} categories available")
 
         elif section == 'hydrophobicity':
             if self.hydrophobicity is not None:
@@ -958,11 +1434,22 @@ class ExcelReportGenerator:
                     if not combined[col].isna().all():
                         try:
                             result = self.analyzer.analyze_threeway(
-                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
+                                combined, col, fa_col, fb_col, fc_col, fa_name, fb_name, fc_name,
+                                run_posthoc=False,
                             )
                             self.results.threeway_hydrophobicity[col] = result
                         except Exception as e:
                             print(f"Could not analyze {col} (three-way): {e}")
+
+                self._apply_threeway_fdr(
+                    self.results.threeway_hydrophobicity, 'threeway:hydrophobicity:raw'
+                )
+                for col, result in self.results.threeway_hydrophobicity.items():
+                    self._run_threeway_posthoc_if_needed(
+                        result, combined, col, fa_col, fb_col, fc_col
+                    )
+                del combined
+                gc.collect()
                 self._log(f"  Done: {len(self.results.threeway_hydrophobicity)} hydrophobicity metrics analyzed")
 
     def run_all_statistics(self) -> ComprehensiveAnalysisResults:
@@ -1051,40 +1538,45 @@ class ExcelReportGenerator:
             group_percentages = raw_data.groupby(summary_group_col)[pct_cols].mean().round(2)
             group_percentages.index.name = summary_group_label
 
-        # Statistical analysis
+        # Category sheets reuse the corresponding totals result. This avoids
+        # running the same aggregate test twice and guarantees that LOD/FDR
+        # decisions are identical across the totals and category tabs.
         stat_result = None
-        if self.n_factors >= 3 and len(self.factors) >= 3:
-            # Three-way mode: run three-way ANOVA on the category total
-            factor_cols_list = list(self.factors.values())
-            factor_names_list = list(self.factors.keys())
-            fa_col, fb_col, fc_col = factor_cols_list[0], factor_cols_list[1], factor_cols_list[2]
-            fa_name, fb_name, fc_name = factor_names_list[0], factor_names_list[1], factor_names_list[2]
-            if fa_col in raw_data.columns and fb_col in raw_data.columns and fc_col in raw_data.columns:
-                try:
-                    stat_result = self.analyzer.analyze_threeway(
-                        raw_data, 'Total', fa_col, fb_col, fc_col, fa_name, fb_name, fc_name
-                    )
-                except Exception as e:
-                    print(f"Could not run three-way ANOVA for {category_name}: {e}")
-        elif self.n_factors >= 2 and len(self.factors) >= 2:
-            # Two-way mode: run two-way ANOVA on the category total
-            factor_cols_list = list(self.factors.values())
-            fa_col = factor_cols_list[0]
-            fb_col = factor_cols_list[1]
-            fa_name = list(self.factors.keys())[0]
-            fb_name = list(self.factors.keys())[1]
-            if fa_col in raw_data.columns and fb_col in raw_data.columns:
-                try:
-                    stat_result = self.analyzer.analyze_twoway(
-                        raw_data, 'Total', fa_col, fb_col, fa_name, fb_name
-                    )
-                except Exception as e:
-                    print(f"Could not run two-way ANOVA for {category_name}: {e}")
-        elif len(self.data[self.group_col].unique()) >= 2:
-            try:
-                stat_result = self.analyzer.analyze(raw_data, 'Total', self.group_col)
-            except Exception as e:
-                print(f"Could not analyze {category_name}: {e}")
+        stat_note = ""
+        total_key = self.CATEGORY_TO_TOTAL.get(category_name)
+        if total_key:
+            source = None
+            if self.n_factors >= 3 and len(self.factors) >= 3:
+                source = self.results.threeway_totals.get(total_key)
+            elif self.n_factors >= 2 and len(self.factors) >= 2:
+                source = self.results.twoway_totals.get(total_key)
+            else:
+                source = self.results.totals_results.get(total_key)
+
+            if source is not None:
+                stat_result = copy.copy(source)
+                stat_result.variable_name = category_name
+
+            details = (self.lod_exclusion_details.get(total_key)
+                       or self.lod_warnings.get(total_key))
+            threshold = self.aggregate_lod_threshold
+            if total_key in self.lod_excluded or (details and details.get('excluded')):
+                burden = (details or {}).get('max_group_burden_pct')
+                burden_text = f"{burden:.1f}%" if burden is not None else "at/above threshold"
+                stat_note = (
+                    f"Not tested: aggregate LOD-bound replacement burden "
+                    f"({burden_text}) reached the {threshold:g}% threshold."
+                )
+            elif total_key in self.lod_warnings:
+                burden = self.lod_warnings[total_key].get('max_group_burden_pct')
+                burden_text = f"{burden:.1f}%" if burden is not None else "at/above threshold"
+                stat_note = (
+                    f"Retained with warning: aggregate LOD-bound replacement burden "
+                    f"({burden_text}) reached the {threshold:g}% threshold; "
+                    "total_all is always tested."
+                )
+            elif stat_result is None:
+                stat_note = "Not tested (aggregate result unavailable or LOD exclusion applied)."
 
         # Drop internal columns before storing
         export_raw_data = raw_data.drop(columns=['_factorial_group_'], errors='ignore')
@@ -1096,12 +1588,15 @@ class ExcelReportGenerator:
             raw_data=export_raw_data,
             group_totals=group_totals,
             group_percentages=group_percentages,
-            statistical_result=stat_result
+            statistical_result=stat_result,
+            statistical_note=stat_note,
         )
     
     def generate_all_sheets(self) -> Dict[str, AnalysisSheet]:
         """Generate analysis data for all categories."""
-        
+        if self.totals is not None:
+            self._ensure_totals_for_categories()
+
         for category_name, category_info in self.ANALYSIS_CATEGORIES.items():
             ba_cols = category_info['get_columns'](self.ba_cols)
             
@@ -1165,7 +1660,13 @@ class ExcelReportGenerator:
             sheet.group_percentages.to_excel(writer, sheet_name=sheet_name, startrow=current_row)
             current_row += len(sheet.group_percentages) + 3
         
-        # 5. Statistical results
+        # 5. Statistical results / LOD note
+        if sheet.statistical_note:
+            note_df = pd.DataFrame({'LOD Note': [sheet.statistical_note]})
+            note_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
+                             index=False)
+            current_row += 2
+
         if sheet.statistical_result:
             result = sheet.statistical_result
 
@@ -1256,17 +1757,22 @@ class ExcelReportGenerator:
                 else:
                     # Build manual ANOVA summary
                     anova_rows = []
-                    for source, stat, pval, es_key in [
-                        (fa_name, tw.factor_a_stat, tw.factor_a_pvalue, fa_name),
-                        (fb_name, tw.factor_b_stat, tw.factor_b_pvalue, fb_name),
+                    for source, stat, pval, qval, es_key in [
+                        (fa_name, tw.factor_a_stat, tw.factor_a_pvalue,
+                         tw.factor_a_qvalue, fa_name),
+                        (fb_name, tw.factor_b_stat, tw.factor_b_pvalue,
+                         tw.factor_b_qvalue, fb_name),
                         (f'{fa_name}×{fb_name}', tw.interaction_stat, tw.interaction_pvalue,
-                         f'{fa_name}×{fb_name}'),
+                         tw.interaction_qvalue, f'{fa_name}×{fb_name}'),
                     ]:
-                        sig = 'Yes' if (not np.isnan(pval) and pval < tw.alpha) else ('No' if not np.isnan(pval) else 'N/A')
+                        decision_p = qval if qval is not None and np.isfinite(qval) else pval
+                        sig = ('Yes' if (not np.isnan(decision_p) and decision_p < tw.alpha)
+                               else ('No' if not np.isnan(decision_p) else 'N/A'))
                         anova_rows.append({
                             'Source': source,
                             'F': f'{stat:.4f}' if not np.isnan(stat) else 'N/A',
                             'p': f'{pval:.6f}' if not np.isnan(pval) else 'N/A',
+                            'q (BH)': f'{qval:.6f}' if qval is not None and np.isfinite(qval) else 'N/A',
                             'partial_η²': f'{tw.effect_sizes.get(es_key, np.nan):.4f}'
                                 if not np.isnan(tw.effect_sizes.get(es_key, np.nan)) else 'N/A',
                             'Significant': sig
@@ -1328,6 +1834,11 @@ class ExcelReportGenerator:
                     'Reason': [result.assumptions.recommendation_reason],
                     'Statistic': [f"{result.main_test.statistic:.4f}"],
                     'P-value': [f"{result.main_test.pvalue:.6f}"],
+                    'q-value (BH)': [
+                        f"{result.main_test.qvalue:.6f}"
+                        if result.main_test.qvalue is not None
+                        and np.isfinite(result.main_test.qvalue) else 'N/A'
+                    ],
                     'Significant': ['Yes' if result.main_test.significant else 'No'],
                     'Effect Size': [f"{result.main_test.effect_size:.4f}" if result.main_test.effect_size else 'N/A'],
                     'Effect Type': [result.main_test.effect_size_type or 'N/A'],
@@ -1510,8 +2021,74 @@ class ExcelReportGenerator:
                         f'HYDROPHOBICITY INDEX COMPARISONS (pH {self.hydro_ph})',
                         self.results.hydrophobicity_results
                     )
+            self._write_aggregate_lod_sheet(writer)
             self._write_display_order_block(writer)
         return filepath
+
+    def _write_aggregate_lod_sheet(self, writer: pd.ExcelWriter):
+        """Write aggregate LOD burden diagnostics, including every sample."""
+        details = self.results.aggregate_lod_details or self._aggregate_lod_cache
+        if not details:
+            return
+
+        sheet_name = 'Aggregate_LOD_Burden'
+        group_rows = []
+        sample_rows = []
+        for category, info in sorted(details.items()):
+            status = 'Excluded'
+            if category in self.lod_warnings:
+                status = 'Retained (warning)'
+            elif not info.get('excluded', category in self.lod_excluded):
+                status = 'Retained'
+            members = ', '.join(info.get('members', []))
+            for group, fraction in info.get('group_fractions', {}).items():
+                group_rows.append({
+                    'Aggregate': category,
+                    'Group': group,
+                    'Max Group Burden %': round(float(fraction) * 100.0, 4),
+                    'Overall Burden %': (round(float(info['overall_fraction']) * 100.0, 4)
+                                         if pd.notna(info.get('overall_fraction')) else np.nan),
+                    'Threshold %': info.get('threshold_pct', self.aggregate_lod_threshold),
+                    'Status': status,
+                    'Constituent Bile Acids': members,
+                })
+
+            sample_frame = info.get('sample_frame')
+            if sample_frame is None:
+                continue
+            for _, row in sample_frame.iterrows():
+                sample_rows.append({
+                    'Aggregate': category,
+                    'Sample ID': row.get('sample_id', ''),
+                    'Group': row.get('group', ''),
+                    'Observed Contribution': row.get('observed_contribution', np.nan),
+                    'LOD-Bound Contribution': row.get('lod_bound_contribution', np.nan),
+                    'Aggregate Contribution': row.get('aggregate_contribution', np.nan),
+                    'LOD Burden %': (round(float(row['lod_burden_pct']), 4)
+                                     if pd.notna(row.get('lod_burden_pct')) else np.nan),
+                })
+
+        current_row = 0
+        pd.DataFrame({'': ['AGGREGATE LOD REPLACEMENT BURDEN']}).to_excel(
+            writer, sheet_name=sheet_name, startrow=current_row, index=False, header=False
+        )
+        current_row += 2
+        if group_rows:
+            pd.DataFrame({'': ['GROUP-LEVEL SUMMARY (maximum group burden drives exclusion)']}).to_excel(
+                writer, sheet_name=sheet_name, startrow=current_row, index=False, header=False
+            )
+            current_row += 1
+            group_df = pd.DataFrame(group_rows)
+            group_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
+            current_row += len(group_df) + 3
+        if sample_rows:
+            pd.DataFrame({'': ['PER-SAMPLE BURDEN']}).to_excel(
+                writer, sheet_name=sheet_name, startrow=current_row, index=False, header=False
+            )
+            current_row += 1
+            pd.DataFrame(sample_rows).to_excel(
+                writer, sheet_name=sheet_name, startrow=current_row, index=False
+            )
 
     def _write_display_order_block(self, writer: pd.ExcelWriter):
         """Append the figure group order (display only) below the Overview content."""
@@ -1539,23 +2116,38 @@ class ExcelReportGenerator:
         # Data summary
         _excl_ba = {k: v for k, v in self.lod_excluded.items() if k in self.ba_cols}
         _excl_cat = {k: v for k, v in self.lod_excluded.items() if k not in self.ba_cols}
-        lod_params = ['LOD Exclusion Threshold', 'Analytes Excluded (LOD)', 'Categories Excluded (LOD)'] if self.lod_threshold > 0 else []
-        lod_values = [
-            f'{self.lod_threshold}% replacement',
-            f'{len(_excl_ba)} of {len(self.ba_cols)} ({len(_excl_ba)/len(self.ba_cols)*100:.1f}%)' if self.ba_cols else '0',
-            f'{len(_excl_cat)}' if _excl_cat else 'None'
-        ] if self.lod_threshold > 0 else []
+        lod_params = []
+        lod_values = []
+        if self.lod_threshold > 0:
+            lod_params += ['Individual LOD Threshold', 'Analytes Excluded (LOD)']
+            lod_values += [
+                f'{self.lod_threshold}% below LOD',
+                (f'{len(_excl_ba)} of {len(self.ba_cols)} '
+                 f'({len(_excl_ba)/len(self.ba_cols)*100:.1f}%)') if self.ba_cols else '0',
+            ]
+        if self.aggregate_lod_threshold > 0:
+            lod_params += [
+                'Aggregate LOD Burden Threshold',
+                'Categories Excluded (Aggregate LOD)',
+            ]
+            lod_values += [
+                f'{self.aggregate_lod_threshold:g}% LOD-bound replacement',
+                f'{len(_excl_cat)}' if _excl_cat else 'None',
+            ]
         hydro_params = ['Hydrophobicity pH', 'Hydrophobicity Tissue'] if self.hydrophobicity is not None else []
         hydro_values = [f'{self.hydro_ph}', self.hydro_tissue.capitalize()] if self.hydrophobicity is not None else []
+        fdr_value = ('BH q-values across analytes in each section/scale family'
+                     if self.fdr_enabled else 'Off')
         summary_data = {
             'Parameter': ['Total Samples', 'Groups', 'Bile Acids Measured', 'Significance Level',
-                          'Data Transformation'] + lod_params + hydro_params,
+                          'Data Transformation', 'FDR Correction'] + lod_params + hydro_params,
             'Value': [
                 len(self.data),
                 ', '.join(self.data[self.group_col].unique().astype(str)),
                 len(self.ba_cols),
                 f"α = {self.alpha}",
-                'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)'
+                'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)',
+                fdr_value,
             ] + lod_values + hydro_values
         }
         summary_df = pd.DataFrame(summary_data)
@@ -1563,13 +2155,30 @@ class ExcelReportGenerator:
         current_row += len(summary_df) + 2
 
         # LOD excluded analytes detail table
-        if self.lod_excluded:
-            lod_header = pd.DataFrame({'': ['LOD-EXCLUDED ANALYTES']})
+        if self.lod_excluded or self.lod_warnings:
+            lod_header = pd.DataFrame({'': ['LOD-EXCLUDED ANALYTES / AGGREGATES']})
             lod_header.to_excel(writer, sheet_name='Overview', startrow=current_row,
                                index=False, header=False)
             current_row += 1
-            lod_detail_rows = [{'Analyte': col, 'LOD %': f'{pct}%', 'Type': 'Category' if col in ANALYSIS_GROUPS or col == 'total_all' else 'Individual'}
-                               for col, pct in sorted(self.lod_excluded.items())]
+            lod_detail_rows = []
+            for col, pct in sorted(self.lod_excluded.items()):
+                is_aggregate = col not in self.ba_cols
+                lod_detail_rows.append({
+                    'Analyte': col,
+                    'LOD Metric': ('Max group LOD-bound burden' if is_aggregate
+                                   else 'Below-LOD replacement'),
+                    'LOD %': f'{pct}%',
+                    'Type': 'Aggregate' if is_aggregate else 'Individual',
+                    'Status': 'Excluded',
+                })
+            for col, info in sorted(self.lod_warnings.items()):
+                lod_detail_rows.append({
+                    'Analyte': col,
+                    'LOD Metric': 'Max group LOD-bound burden',
+                    'LOD %': f"{info.get('max_group_burden_pct', 0):.2f}%",
+                    'Type': 'Aggregate (retained)',
+                    'Status': 'Warning only',
+                })
             lod_detail_df = pd.DataFrame(lod_detail_rows)
             lod_detail_df.to_excel(writer, sheet_name='Overview', startrow=current_row, index=False)
             current_row += len(lod_detail_df) + 2
@@ -1585,19 +2194,24 @@ class ExcelReportGenerator:
             if sheet.statistical_result:
                 result = sheet.statistical_result
                 
-                # Get significant comparisons
+                # Get significant comparisons (only when the omnibus is significant)
                 sig_comparisons = []
-                if result.posthoc_test and result.posthoc_test.pairwise_results is not None:
+                if (result.main_test.significant
+                        and result.posthoc_test
+                        and result.posthoc_test.pairwise_results is not None):
                     sig_pairs = result.posthoc_test.pairwise_results[
                         result.posthoc_test.pairwise_results['significant'] == True
                     ]
                     for _, row in sig_pairs.iterrows():
                         sig_comparisons.append(f"{row['group1']} vs {row['group2']}")
                 
+                qvalue = result.main_test.qvalue
                 results_rows.append({
                     'Analysis': sheet_name,
                     'Test': result.main_test.test_type.value,
                     'P-value': f"{result.main_test.pvalue:.6f}",
+                    'q-value (BH)': (f"{qvalue:.6f}"
+                                     if qvalue is not None and np.isfinite(qvalue) else 'N/A'),
                     'Significant': 'Yes' if result.main_test.significant else 'No',
                     'Effect Size': f"{result.main_test.effect_size:.3f}" if result.main_test.effect_size else 'N/A',
                     'Significant Comparisons': '; '.join(sig_comparisons) if sig_comparisons else 'None'
@@ -1616,16 +2230,21 @@ class ExcelReportGenerator:
             hydro_rows = []
             for metric, result in self.results.hydrophobicity_results.items():
                 sig_comparisons = []
-                if result.posthoc_test and result.posthoc_test.pairwise_results is not None:
+                if (result.main_test.significant
+                        and result.posthoc_test
+                        and result.posthoc_test.pairwise_results is not None):
                     sig_pairs = result.posthoc_test.pairwise_results[
                         result.posthoc_test.pairwise_results['significant'] == True
                     ]
                     for _, row in sig_pairs.iterrows():
                         sig_comparisons.append(f"{row['group1']} vs {row['group2']}")
+                qvalue = result.main_test.qvalue
                 hydro_rows.append({
                     'Metric': metric,
                     'Test': result.main_test.test_type.value,
                     'P-value': f"{result.main_test.pvalue:.6f}",
+                    'q-value (BH)': (f"{qvalue:.6f}"
+                                     if qvalue is not None and np.isfinite(qvalue) else 'N/A'),
                     'Significant': 'Yes' if result.main_test.significant else 'No',
                     'Effect Size': f"{result.main_test.effect_size:.3f}" if result.main_test.effect_size else 'N/A',
                     'Significant Comparisons': '; '.join(sig_comparisons) if sig_comparisons else 'None'
@@ -1668,12 +2287,24 @@ class ExcelReportGenerator:
 
         _excl_ba_tw = {k: v for k, v in self.lod_excluded.items() if k in self.ba_cols}
         _excl_cat_tw = {k: v for k, v in self.lod_excluded.items() if k not in self.ba_cols}
-        lod_params_tw = ['LOD Exclusion Threshold', 'Analytes Excluded (LOD)', 'Categories Excluded (LOD)'] if self.lod_threshold > 0 else []
-        lod_values_tw = [
-            f'{self.lod_threshold}% replacement',
-            f'{len(_excl_ba_tw)} of {len(self.ba_cols)} ({len(_excl_ba_tw)/len(self.ba_cols)*100:.1f}%)' if self.ba_cols else '0',
-            f'{len(_excl_cat_tw)}' if _excl_cat_tw else 'None'
-        ] if self.lod_threshold > 0 else []
+        lod_params_tw = []
+        lod_values_tw = []
+        if self.lod_threshold > 0:
+            lod_params_tw += ['Individual LOD Threshold', 'Analytes Excluded (LOD)']
+            lod_values_tw += [
+                f'{self.lod_threshold}% below LOD',
+                (f'{len(_excl_ba_tw)} of {len(self.ba_cols)} '
+                 f'({len(_excl_ba_tw)/len(self.ba_cols)*100:.1f}%)') if self.ba_cols else '0',
+            ]
+        if self.aggregate_lod_threshold > 0:
+            lod_params_tw += [
+                'Aggregate LOD Burden Threshold',
+                'Categories Excluded (Aggregate LOD)',
+            ]
+            lod_values_tw += [
+                f'{self.aggregate_lod_threshold:g}% LOD-bound replacement',
+                f'{len(_excl_cat_tw)}' if _excl_cat_tw else 'None',
+            ]
         hydro_params_tw = ['Hydrophobicity pH', 'Hydrophobicity Tissue'] if self.hydrophobicity is not None else []
         hydro_values_tw = [f'{self.hydro_ph}', self.hydro_tissue.capitalize()] if self.hydrophobicity is not None else []
         summary_data = {
@@ -1682,14 +2313,16 @@ class ExcelReportGenerator:
                 f'Factor A: {fa_name}', f'Factor B: {fb_name}',
                 'Cell Sizes', 'Bile Acids Measured',
                 'Significance Level', 'Non-parametric Method',
-                'Data Transformation'
+                'Data Transformation', 'FDR Correction'
             ] + lod_params_tw + hydro_params_tw,
             'Value': [
                 len(valid_data), f'{fa_name} x {fb_name} factorial',
                 ', '.join(fa_levels), ', '.join(fb_levels),
                 '; '.join(cell_sizes), len(self.ba_cols),
                 f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)',
-                'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)'
+                'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)',
+                ('BH q-values across analytes in each effect family'
+                 if self.fdr_enabled else 'Off'),
             ] + lod_values_tw + hydro_values_tw
         }
         summary_df = pd.DataFrame(summary_data)
@@ -1697,13 +2330,30 @@ class ExcelReportGenerator:
         current_row += len(summary_df) + 3
 
         # LOD excluded analytes detail table
-        if self.lod_excluded:
-            lod_header = pd.DataFrame({'': ['LOD-EXCLUDED ANALYTES']})
+        if self.lod_excluded or self.lod_warnings:
+            lod_header = pd.DataFrame({'': ['LOD-EXCLUDED ANALYTES / AGGREGATES']})
             lod_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
                                index=False, header=False)
             current_row += 1
-            lod_detail_rows = [{'Analyte': col, 'LOD %': f'{pct}%', 'Type': 'Category' if col in ANALYSIS_GROUPS or col == 'total_all' else 'Individual'}
-                               for col, pct in sorted(self.lod_excluded.items())]
+            lod_detail_rows = []
+            for col, pct in sorted(self.lod_excluded.items()):
+                is_aggregate = col not in self.ba_cols
+                lod_detail_rows.append({
+                    'Analyte': col,
+                    'LOD Metric': ('Max group LOD-bound burden' if is_aggregate
+                                   else 'Below-LOD replacement'),
+                    'LOD %': f'{pct}%',
+                    'Type': 'Aggregate' if is_aggregate else 'Individual',
+                    'Status': 'Excluded',
+                })
+            for col, info in sorted(self.lod_warnings.items()):
+                lod_detail_rows.append({
+                    'Analyte': col,
+                    'LOD Metric': 'Max group LOD-bound burden',
+                    'LOD %': f"{info.get('max_group_burden_pct', 0):.2f}%",
+                    'Type': 'Aggregate (retained)',
+                    'Status': 'Warning only',
+                })
             lod_detail_df = pd.DataFrame(lod_detail_rows)
             lod_detail_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
             current_row += len(lod_detail_df) + 3
@@ -1839,22 +2489,26 @@ class ExcelReportGenerator:
             else:
                 # Build ANOVA table manually from results
                 anova_rows = []
-                for source, stat, pval, df_tup, es_key in [
-                    (fa_name, tw.factor_a_stat, tw.factor_a_pvalue, tw.factor_a_df, fa_name),
-                    (fb_name, tw.factor_b_stat, tw.factor_b_pvalue, tw.factor_b_df, fb_name),
+                for source, stat, pval, qval, df_tup, es_key in [
+                    (fa_name, tw.factor_a_stat, tw.factor_a_pvalue,
+                     tw.factor_a_qvalue, tw.factor_a_df, fa_name),
+                    (fb_name, tw.factor_b_stat, tw.factor_b_pvalue,
+                     tw.factor_b_qvalue, tw.factor_b_df, fb_name),
                     (f'{fa_name}×{fb_name}', tw.interaction_stat, tw.interaction_pvalue,
-                     tw.interaction_df, f'{fa_name}×{fb_name}'),
+                     tw.interaction_qvalue, tw.interaction_df, f'{fa_name}×{fb_name}'),
                 ]:
+                    decision_p = qval if qval is not None and np.isfinite(qval) else pval
                     anova_rows.append({
                         'Source': source,
                         'F': f'{stat:.4f}' if not np.isnan(stat) else 'N/A',
                         'df_num': df_tup[0] if len(df_tup) > 0 else 'N/A',
                         'df_den': df_tup[1] if len(df_tup) > 1 else 'N/A',
                         'p': f'{pval:.6f}' if not np.isnan(pval) else 'N/A',
+                        'q (BH)': f'{qval:.6f}' if qval is not None and np.isfinite(qval) else 'N/A',
                         'partial_η²': f'{tw.effect_sizes.get(es_key, np.nan):.4f}'
                             if not np.isnan(tw.effect_sizes.get(es_key, np.nan)) else 'N/A',
-                        'Significant': 'Yes' if pval < tw.alpha else 'No'
-                            if not np.isnan(pval) else 'N/A'
+                        'Significant': ('Yes' if decision_p < tw.alpha else 'No')
+                            if not np.isnan(decision_p) else 'N/A'
                     })
                 anova_df = pd.DataFrame(anova_rows)
                 anova_df.to_excel(writer, sheet_name=sheet_name,
@@ -1934,12 +2588,24 @@ class ExcelReportGenerator:
 
         _excl_ba_3w = {k: v for k, v in self.lod_excluded.items() if k in self.ba_cols}
         _excl_cat_3w = {k: v for k, v in self.lod_excluded.items() if k not in self.ba_cols}
-        lod_params_3w = ['LOD Exclusion Threshold', 'Analytes Excluded (LOD)', 'Categories Excluded (LOD)'] if self.lod_threshold > 0 else []
-        lod_values_3w = [
-            f'{self.lod_threshold}% replacement',
-            f'{len(_excl_ba_3w)} of {len(self.ba_cols)} ({len(_excl_ba_3w)/len(self.ba_cols)*100:.1f}%)' if self.ba_cols else '0',
-            f'{len(_excl_cat_3w)}' if _excl_cat_3w else 'None'
-        ] if self.lod_threshold > 0 else []
+        lod_params_3w = []
+        lod_values_3w = []
+        if self.lod_threshold > 0:
+            lod_params_3w += ['Individual LOD Threshold', 'Analytes Excluded (LOD)']
+            lod_values_3w += [
+                f'{self.lod_threshold}% below LOD',
+                (f'{len(_excl_ba_3w)} of {len(self.ba_cols)} '
+                 f'({len(_excl_ba_3w)/len(self.ba_cols)*100:.1f}%)') if self.ba_cols else '0',
+            ]
+        if self.aggregate_lod_threshold > 0:
+            lod_params_3w += [
+                'Aggregate LOD Burden Threshold',
+                'Categories Excluded (Aggregate LOD)',
+            ]
+            lod_values_3w += [
+                f'{self.aggregate_lod_threshold:g}% LOD-bound replacement',
+                f'{len(_excl_cat_3w)}' if _excl_cat_3w else 'None',
+            ]
         hydro_params_3w = ['Hydrophobicity pH', 'Hydrophobicity Tissue'] if self.hydrophobicity is not None else []
         hydro_values_3w = [f'{self.hydro_ph}', self.hydro_tissue.capitalize()] if self.hydrophobicity is not None else []
         summary_data = {
@@ -1947,13 +2613,15 @@ class ExcelReportGenerator:
                 'Total Samples', 'Experimental Design',
                 f'Factor A: {fa_name}', f'Factor B: {fb_name}', f'Factor C: {fc_name}',
                 'Bile Acids Measured', 'Significance Level', 'Non-parametric Method',
-                'Data Transformation'
+                'Data Transformation', 'FDR Correction'
             ] + lod_params_3w + hydro_params_3w,
             'Value': [
                 len(valid_data), f'{fa_name} x {fb_name} x {fc_name} factorial',
                 ', '.join(fa_levels), ', '.join(fb_levels), ', '.join(fc_levels),
                 len(self.ba_cols), f'α = {self.alpha}', 'ART ANOVA (when assumptions violated)',
-                'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)'
+                'Raw + log₁₀ (concentrations, totals, ratios); raw only (percentages)',
+                ('BH q-values across analytes in each effect family'
+                 if self.fdr_enabled else 'Off'),
             ] + lod_values_3w + hydro_values_3w
         }
         summary_df = pd.DataFrame(summary_data)
@@ -1961,13 +2629,30 @@ class ExcelReportGenerator:
         current_row += len(summary_df) + 3
 
         # LOD excluded analytes detail table
-        if self.lod_excluded:
-            lod_header = pd.DataFrame({'': ['LOD-EXCLUDED ANALYTES']})
+        if self.lod_excluded or self.lod_warnings:
+            lod_header = pd.DataFrame({'': ['LOD-EXCLUDED ANALYTES / AGGREGATES']})
             lod_header.to_excel(writer, sheet_name=sheet_name, startrow=current_row,
                                index=False, header=False)
             current_row += 1
-            lod_detail_rows = [{'Analyte': col, 'LOD %': f'{pct}%', 'Type': 'Category' if col in ANALYSIS_GROUPS or col == 'total_all' else 'Individual'}
-                               for col, pct in sorted(self.lod_excluded.items())]
+            lod_detail_rows = []
+            for col, pct in sorted(self.lod_excluded.items()):
+                is_aggregate = col not in self.ba_cols
+                lod_detail_rows.append({
+                    'Analyte': col,
+                    'LOD Metric': ('Max group LOD-bound burden' if is_aggregate
+                                   else 'Below-LOD replacement'),
+                    'LOD %': f'{pct}%',
+                    'Type': 'Aggregate' if is_aggregate else 'Individual',
+                    'Status': 'Excluded',
+                })
+            for col, info in sorted(self.lod_warnings.items()):
+                lod_detail_rows.append({
+                    'Analyte': col,
+                    'LOD Metric': 'Max group LOD-bound burden',
+                    'LOD %': f"{info.get('max_group_burden_pct', 0):.2f}%",
+                    'Type': 'Aggregate (retained)',
+                    'Status': 'Warning only',
+                })
             lod_detail_df = pd.DataFrame(lod_detail_rows)
             lod_detail_df.to_excel(writer, sheet_name=sheet_name, startrow=current_row, index=False)
             current_row += len(lod_detail_df) + 3
@@ -2130,17 +2815,22 @@ class ExcelReportGenerator:
         summary_rows = []
         for ba_name, result in results_dict.items():
             sig_comparisons = []
-            if result.posthoc_test and result.posthoc_test.pairwise_results is not None:
+            if (result.main_test.significant
+                    and result.posthoc_test
+                    and result.posthoc_test.pairwise_results is not None):
                 sig_pairs = result.posthoc_test.pairwise_results[
                     result.posthoc_test.pairwise_results['significant'] == True
                 ]
                 for _, row in sig_pairs.iterrows():
                     sig_comparisons.append(f"{row['group1']} vs {row['group2']}")
 
+            qvalue = result.main_test.qvalue
             summary_rows.append({
                 'Analyte': ba_name,
                 'Test': result.main_test.test_type.value,
                 'P-value': f"{result.main_test.pvalue:.6f}",
+                'q-value (BH)': (f"{qvalue:.6f}"
+                                 if qvalue is not None and np.isfinite(qvalue) else 'N/A'),
                 'Significant': 'Yes' if result.main_test.significant else 'No',
                 'Effect Size': f"{result.main_test.effect_size:.3f}" if result.main_test.effect_size else 'N/A',
                 'Significant Comparisons': '; '.join(sig_comparisons) if sig_comparisons else 'None'
@@ -2181,9 +2871,12 @@ class ExcelReportGenerator:
                 current_row += len(result.descriptive_stats) + 1
 
             # Main test result
+            qvalue = result.main_test.qvalue
             main_row = {
                 'Statistic': f"{result.main_test.statistic:.4f}",
                 'P-value': f"{result.main_test.pvalue:.6f}",
+                'q-value (BH)': (f"{qvalue:.6f}"
+                                 if qvalue is not None and np.isfinite(qvalue) else 'N/A'),
                 'Significant': 'Yes' if result.main_test.significant else 'No',
                 'Effect Size': f"{result.main_test.effect_size:.3f}" if result.main_test.effect_size else 'N/A',
             }

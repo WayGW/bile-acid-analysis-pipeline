@@ -28,7 +28,10 @@ from config.bile_acid_species import (
     get_12alpha_hydroxylated, get_non12alpha_hydroxylated, get_sulfated
 )
 from modules.data_processing import BileAcidDataProcessor, ProcessedData, validate_data_quality
-from modules.statistical_tests import StatisticalAnalyzer, format_analysis_report, format_twoway_apa, format_threeway_apa
+from modules.statistical_tests import (
+    StatisticalAnalyzer, format_analysis_report, format_twoway_apa,
+    format_threeway_apa, effect_pvalue,
+)
 from modules.visualization import BileAcidVisualizer
 from modules.group_order import apply_order, default_levels, order_table, positions_to_order, combined_order
 from modules.hydrophobicity import HydrophobicityCalculator
@@ -141,6 +144,8 @@ def get_data_affecting_settings(settings):
     return {
         'lod_handling': settings['lod_handling'],
         'lod_threshold': settings.get('lod_threshold', 50),
+        'aggregate_lod_threshold': settings.get('aggregate_lod_threshold', 5),
+        'fdr_enabled': settings.get('fdr_enabled', True),
         'alpha': settings['alpha'],
         'dilution_factor': settings.get('dilution_factor', 1.0),
         'units': settings.get('units', 'nmol/L'),
@@ -310,8 +315,12 @@ def _ensure_report_generator(processed, settings):
         n_factors=n_factors,
         analyte_lod_counts=getattr(processed.structure, 'analyte_lod_counts', {}),
         analyte_lod_rows=getattr(processed.structure, 'analyte_lod_rows', {}),
+        analyte_lod_values=getattr(processed.structure, 'analyte_lod_values', {}),
         n_samples=len(processed.sample_data),
         lod_threshold=settings.get('lod_threshold', 50),
+        aggregate_lod_threshold=settings.get('aggregate_lod_threshold', 5),
+        dilution_factor=settings.get('dilution_factor', 1.0),
+        fdr_enabled=settings.get('fdr_enabled', True),
         units=settings.get('units', 'nmol/L'),
     )
     st.session_state.report_generator = report_gen
@@ -941,8 +950,7 @@ def iter_all_export_figures(processed, results, settings):
         conc_selections = {
             'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
             'significant': [b for b in available_bas if b in results.threeway_individual_ba
-                           and any(getattr(results.threeway_individual_ba[b].threeway_result, attr) < settings['alpha']
-                                   for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])],
+                           and _threeway_any_effect(results.threeway_individual_ba[b], settings['alpha'])],
             'primary': [b for b in get_primary() if b in available_bas],
             'secondary': [b for b in get_secondary() if b in available_bas],
         }
@@ -1032,9 +1040,7 @@ def iter_all_export_figures(processed, results, settings):
         conc_selections = {
             'top10': processed.concentrations.mean().nlargest(10).index.tolist(),
             'significant': [b for b in available_bas if b in results.twoway_individual_ba
-                           and (results.twoway_individual_ba[b].twoway_result.factor_a_pvalue < settings['alpha']
-                                or results.twoway_individual_ba[b].twoway_result.factor_b_pvalue < settings['alpha']
-                                or results.twoway_individual_ba[b].twoway_result.interaction_pvalue < settings['alpha'])],
+                           and _twoway_any_effect(results.twoway_individual_ba[b], settings['alpha'])],
             'primary': [b for b in get_primary() if b in available_bas],
             'secondary': [b for b in get_secondary() if b in available_bas],
         }
@@ -1465,9 +1471,17 @@ def render_sidebar():
     lod_threshold = st.sidebar.slider(
         "LOD exclusion threshold (%)",
         min_value=0, max_value=100, value=50, step=5,
-        help="Exclude analytes from statistical testing if ≥ this % of values "
+        help="Exclude individual analytes from statistical testing if ≥ this % of values "
              "are below LOD. Set to 0 to disable. Uses modified rule: analyte is "
              "kept if ANY group has ≥ (100 − threshold)% detected values."
+    )
+    aggregate_lod_threshold = st.sidebar.slider(
+        "Aggregate LOD burden threshold (%)",
+        min_value=0, max_value=100, value=5, step=1,
+        help="Exclude aggregate totals from statistical testing when the maximum "
+             "group LOD-bound replacement burden reaches this percentage. "
+             "Burden = LOD-bound contribution / (observed + LOD-bound contribution). "
+             "total_all is always tested; it only receives a warning. Set to 0 to disable."
     )
     
     st.sidebar.markdown("### 🧪 Hydrophobicity")
@@ -1489,6 +1503,13 @@ def render_sidebar():
 
     st.sidebar.markdown("### 📈 Analysis")
     alpha = st.sidebar.slider("Significance (α)", 0.01, 0.10, 0.05, 0.01)
+    fdr_enabled = st.sidebar.checkbox(
+        "FDR-adjust primary tests (BH)",
+        value=True,
+        help="Apply Benjamini-Hochberg q-values across analytes within each "
+             "section and scale (raw/log₁₀). q-significant omnibus results gate "
+             "post-hoc comparisons; pairwise tests remain within-endpoint BH-adjusted."
+    )
     plot_type = st.sidebar.selectbox("Plot type", ["box", "violin", "bar", "strip"])
     show_points = st.sidebar.checkbox("Show data points", True)
     
@@ -1518,6 +1539,8 @@ def render_sidebar():
                                       format_func=lambda x: style_options[x])
     
     return {'lod_handling': lod_handling, 'lod_threshold': lod_threshold,
+            'aggregate_lod_threshold': aggregate_lod_threshold,
+            'fdr_enabled': fdr_enabled,
             'alpha': alpha, 'plot_type': plot_type,
             'show_points': show_points,
             'color_palette': color_palette, 'plot_style': plot_style,
@@ -1556,13 +1579,10 @@ def render_concentrations_tab(processed, settings):
     elif quick == "Significant":
         if is_threeway:
             selected = [b for b in available_bas if b in results.threeway_individual_ba
-                       and any(getattr(results.threeway_individual_ba[b].threeway_result, attr) < settings['alpha']
-                               for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
+                       and _threeway_any_effect(results.threeway_individual_ba[b], settings['alpha'])]
         elif is_twoway:
             selected = [b for b in available_bas if b in results.twoway_individual_ba
-                       and (results.twoway_individual_ba[b].twoway_result.factor_a_pvalue < settings['alpha']
-                            or results.twoway_individual_ba[b].twoway_result.factor_b_pvalue < settings['alpha']
-                            or results.twoway_individual_ba[b].twoway_result.interaction_pvalue < settings['alpha'])]
+                       and _twoway_any_effect(results.twoway_individual_ba[b], settings['alpha'])]
         else:
             selected = [b for b in available_bas if b in results.individual_ba_results
                        and results.individual_ba_results[b].main_test.significant]
@@ -1619,10 +1639,22 @@ def render_concentrations_tab(processed, settings):
         if excluded_selected:
             excl_list = ", ".join(f"{ba} ({pct}%)" for ba, pct in sorted(excluded_selected.items()))
             st.info(
-                f"**LOD exclusion** (threshold: ≥{getattr(results, 'lod_threshold', 50)}% below LOD): "
+                f"**Individual LOD exclusion** "
+                f"(threshold: ≥{getattr(results, 'lod_threshold', 50)}% below LOD): "
                 f"The following analytes were excluded from statistical testing: {excl_list}. "
                 f"Plots are still shown but without ANOVA results."
             )
+
+    lod_warnings = getattr(results, 'lod_warnings', {})
+    if lod_warnings:
+        warning_list = ", ".join(
+            f"{key} ({info.get('max_group_burden_pct', 0):.1f}% max group burden)"
+            for key, info in sorted(lod_warnings.items())
+        )
+        st.warning(
+            "**Aggregate LOD warning:** total_all is always tested, but its "
+            f"LOD-bound replacement burden reached the threshold for: {warning_list}."
+        )
 
     if selected:
         if is_threeway:
@@ -1915,9 +1947,12 @@ def render_totals_tab(processed, settings):
             for t in available:
                 res = stats_dict.get(t)
                 if res:
+                    qvalue = res.main_test.qvalue
                     rows.append({
                         'Total': t.replace('_', ' ').title(),
                         'P-value': f"{res.main_test.pvalue:.4f}",
+                        'q-value (BH)': (f"{qvalue:.4f}"
+                                         if qvalue is not None and np.isfinite(qvalue) else 'N/A'),
                         'Significant': '\u2713' if res.main_test.significant else '',
                         'APA': format_apa_statistics(res)
                     })
@@ -2003,13 +2038,10 @@ def render_percentages_tab(processed, settings):
     elif quick == "Significant":
         if is_threeway:
             selected_pct_cols = [c for c in pct_cols if c in results.threeway_percentages
-                               and any(getattr(results.threeway_percentages[c].threeway_result, attr) < settings['alpha']
-                                       for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
+                               and _threeway_any_effect(results.threeway_percentages[c], settings['alpha'])]
         elif is_twoway:
             selected_pct_cols = [c for c in pct_cols if c in results.twoway_percentages
-                               and (results.twoway_percentages[c].twoway_result.factor_a_pvalue < settings['alpha']
-                                    or results.twoway_percentages[c].twoway_result.factor_b_pvalue < settings['alpha']
-                                    or results.twoway_percentages[c].twoway_result.interaction_pvalue < settings['alpha'])]
+                               and _twoway_any_effect(results.twoway_percentages[c], settings['alpha'])]
         else:
             selected_pct_cols = [c for c in pct_cols if c in results.percentages_results
                                and results.percentages_results[c].main_test.significant]
@@ -2053,13 +2085,10 @@ def render_percentages_tab(processed, settings):
     # Show significant findings summary
     if is_threeway:
         sig_pcts = [c for c in selected_pct_cols if c in results.threeway_percentages
-                   and any(getattr(results.threeway_percentages[c].threeway_result, attr) < settings['alpha']
-                           for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
+                   and _threeway_any_effect(results.threeway_percentages[c], settings['alpha'])]
     elif is_twoway:
         sig_pcts = [c for c in selected_pct_cols if c in results.twoway_percentages
-                   and (results.twoway_percentages[c].twoway_result.factor_a_pvalue < settings['alpha']
-                        or results.twoway_percentages[c].twoway_result.factor_b_pvalue < settings['alpha']
-                        or results.twoway_percentages[c].twoway_result.interaction_pvalue < settings['alpha'])]
+                   and _twoway_any_effect(results.twoway_percentages[c], settings['alpha'])]
     else:
         sig_pcts = [c for c in selected_pct_cols if c in results.percentages_results
                    and results.percentages_results[c].main_test.significant]
@@ -2300,12 +2329,16 @@ def render_percentages_tab(processed, settings):
                 res = results.percentages_results.get(pct_col)
                 if res:
                     n_sig = 0
-                    if res.posthoc_test and res.posthoc_test.pairwise_results is not None:
+                    if (res.main_test.significant and res.posthoc_test
+                            and res.posthoc_test.pairwise_results is not None):
                         n_sig = res.posthoc_test.pairwise_results['significant'].sum()
+                    qvalue = res.main_test.qvalue
                     rows.append({
                         'Bile Acid': ba_name,
                         'Test': res.main_test.test_type.value,
                         'P-value': f"{res.main_test.pvalue:.4f}",
+                        'q-value (BH)': (f"{qvalue:.4f}"
+                                         if qvalue is not None and np.isfinite(qvalue) else 'N/A'),
                         'Significant': '✓' if res.main_test.significant else '',
                         'Effect Size': f"{res.main_test.effect_size:.3f}" if res.main_test.effect_size else 'N/A',
                         'Sig. Pairs': n_sig,
@@ -2444,13 +2477,10 @@ def render_ratios_tab(processed, settings):
     elif quick == "Significant only":
         if is_threeway:
             selected_ratios = [r for r in available if r in results.threeway_ratios
-                             and any(getattr(results.threeway_ratios[r].threeway_result, attr) < settings['alpha']
-                                     for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
+                             and _threeway_any_effect(results.threeway_ratios[r], settings['alpha'])]
         elif is_twoway:
             selected_ratios = [r for r in available if r in results.twoway_ratios
-                             and (results.twoway_ratios[r].twoway_result.factor_a_pvalue < settings['alpha']
-                                  or results.twoway_ratios[r].twoway_result.factor_b_pvalue < settings['alpha']
-                                  or results.twoway_ratios[r].twoway_result.interaction_pvalue < settings['alpha'])]
+                             and _twoway_any_effect(results.twoway_ratios[r], settings['alpha'])]
         else:
             selected_ratios = [r for r in available if r in results.ratios_results
                              and results.ratios_results[r].main_test.significant]
@@ -2473,13 +2503,10 @@ def render_ratios_tab(processed, settings):
     # Show significant findings
     if is_threeway:
         sig_ratios = [r for r in selected_ratios if r in results.threeway_ratios
-                     and any(getattr(results.threeway_ratios[r].threeway_result, attr) < settings['alpha']
-                             for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])]
+                     and _threeway_any_effect(results.threeway_ratios[r], settings['alpha'])]
     elif is_twoway:
         sig_ratios = [r for r in selected_ratios if r in results.twoway_ratios
-                     and (results.twoway_ratios[r].twoway_result.factor_a_pvalue < settings['alpha']
-                          or results.twoway_ratios[r].twoway_result.factor_b_pvalue < settings['alpha']
-                          or results.twoway_ratios[r].twoway_result.interaction_pvalue < settings['alpha'])]
+                     and _twoway_any_effect(results.twoway_ratios[r], settings['alpha'])]
     else:
         sig_ratios = [r for r in selected_ratios if r in results.ratios_results
                      and results.ratios_results[r].main_test.significant]
@@ -2640,12 +2667,16 @@ def render_ratios_tab(processed, settings):
                 res = stats_dict.get(r)
                 if res:
                     n_sig = 0
-                    if res.posthoc_test and res.posthoc_test.pairwise_results is not None:
+                    if (res.main_test.significant and res.posthoc_test
+                            and res.posthoc_test.pairwise_results is not None):
                         n_sig = res.posthoc_test.pairwise_results['significant'].sum()
+                    qvalue = res.main_test.qvalue
                     rows.append({
                         'Ratio': r,
                         'Test': res.main_test.test_type.value,
                         'P-value': f"{res.main_test.pvalue:.4f}",
+                        'q-value (BH)': (f"{qvalue:.4f}"
+                                         if qvalue is not None and np.isfinite(qvalue) else 'N/A'),
                         'Significant': '✓' if res.main_test.significant else '',
                         'Effect Size': f"{res.main_test.effect_size:.3f}" if res.main_test.effect_size else 'N/A',
                         'Sig. Pairs': n_sig,
@@ -2820,10 +2851,13 @@ def render_hydrophobicity_tab(processed, settings):
             for c in hydro_cols:
                 res = stats_dict.get(c)
                 if res:
+                    qvalue = res.main_test.qvalue
                     rows.append({
                         'Metric': c,
                         'Test': res.main_test.test_type.value,
                         'P-value': f"{res.main_test.pvalue:.4f}",
+                        'q-value (BH)': (f"{qvalue:.4f}"
+                                         if qvalue is not None and np.isfinite(qvalue) else 'N/A'),
                         'Significant': 'Yes' if res.main_test.significant else '',
                         'Effect Size': f"{res.main_test.effect_size:.3f}" if res.main_test.effect_size else 'N/A',
                         'APA': format_apa_statistics(res)
@@ -2886,30 +2920,80 @@ def _count_sig_twoway(twoway_dict, alpha=0.05):
     """Count significant results in a two-way ANOVA results dictionary."""
     count = 0
     for res in twoway_dict.values():
-        if (res.twoway_result.factor_a_pvalue < alpha
-                or res.twoway_result.factor_b_pvalue < alpha
-                or res.twoway_result.interaction_pvalue < alpha):
+        tw = res.twoway_result
+        if any(effect_pvalue(tw, p_attr, q_attr) < alpha for p_attr, q_attr in [
+            ('factor_a_pvalue', 'factor_a_qvalue'),
+            ('factor_b_pvalue', 'factor_b_qvalue'),
+            ('interaction_pvalue', 'interaction_qvalue'),
+        ]):
             count += 1
     return count
 
 
 def _count_sig_threeway(threeway_dict, alpha=0.05):
     """Count significant results in a three-way ANOVA results dictionary."""
+    effect_attrs = [
+        ('factor_a_pvalue', 'factor_a_qvalue'),
+        ('factor_b_pvalue', 'factor_b_qvalue'),
+        ('factor_c_pvalue', 'factor_c_qvalue'),
+        ('interaction_ab_pvalue', 'interaction_ab_qvalue'),
+        ('interaction_ac_pvalue', 'interaction_ac_qvalue'),
+        ('interaction_bc_pvalue', 'interaction_bc_qvalue'),
+        ('interaction_abc_pvalue', 'interaction_abc_qvalue'),
+    ]
     count = 0
     for res in threeway_dict.values():
-        if any(getattr(res.threeway_result, attr) < alpha
-               for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue']):
+        tw = res.threeway_result
+        if any(effect_pvalue(tw, p_attr, q_attr) < alpha
+               for p_attr, q_attr in effect_attrs):
             count += 1
     return count
 
 
+def _twoway_any_effect(res, alpha):
+    tw = res.twoway_result
+    return any(effect_pvalue(tw, p_attr, q_attr) < alpha for p_attr, q_attr in [
+        ('factor_a_pvalue', 'factor_a_qvalue'),
+        ('factor_b_pvalue', 'factor_b_qvalue'),
+        ('interaction_pvalue', 'interaction_qvalue'),
+    ])
+
+
+def _threeway_any_effect(res, alpha):
+    tw = res.threeway_result
+    return any(effect_pvalue(tw, p_attr, q_attr) < alpha for p_attr, q_attr in [
+        ('factor_a_pvalue', 'factor_a_qvalue'),
+        ('factor_b_pvalue', 'factor_b_qvalue'),
+        ('factor_c_pvalue', 'factor_c_qvalue'),
+        ('interaction_ab_pvalue', 'interaction_ab_qvalue'),
+        ('interaction_ac_pvalue', 'interaction_ac_qvalue'),
+        ('interaction_bc_pvalue', 'interaction_bc_qvalue'),
+        ('interaction_abc_pvalue', 'interaction_abc_qvalue'),
+    ])
+
+
 def render_statistics_tab(processed, settings):
-    """Statistics summary tab."""
+    """Statistics Summary tab."""
     st.markdown("### Statistics Summary")
     results = st.session_state.analysis_results
     is_threeway = results is not None and getattr(results, 'is_threeway', False)
     is_twoway = results is not None and results.is_twoway
     alpha = settings['alpha']
+
+    if results is not None:
+        ba_cols = set(getattr(processed.structure, 'bile_acid_cols', []))
+        aggregate_excluded = {
+            key: pct for key, pct in getattr(results, 'lod_excluded', {}).items()
+            if key not in ba_cols
+        }
+        if aggregate_excluded:
+            detail = ", ".join(f"{key} ({pct}% max group burden)"
+                               for key, pct in sorted(aggregate_excluded.items()))
+            st.info(
+                f"**Aggregate LOD exclusion** (threshold: "
+                f"≥{getattr(results, 'aggregate_lod_threshold', 5):g}% LOD-bound burden): "
+                f"{detail}. total_all is always retained with a warning when applicable."
+            )
 
     if is_threeway:
         sig_t = _count_sig_threeway(results.threeway_totals, alpha)
@@ -2932,8 +3016,7 @@ def render_statistics_tab(processed, settings):
         st.markdown("#### Individual BAs")
         if results.threeway_individual_ba:
             sig_ba_tw = {k: v for k, v in results.threeway_individual_ba.items()
-                        if any(getattr(v.threeway_result, attr) < alpha
-                               for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])}
+                        if _threeway_any_effect(v, alpha)}
             if sig_ba_tw:
                 st.dataframe(get_threeway_differences_summary(sig_ba_tw), hide_index=True)
             else:
@@ -2942,8 +3025,7 @@ def render_statistics_tab(processed, settings):
         st.markdown("#### Percentages")
         if results.threeway_percentages:
             sig_pct_tw = {k.replace('_pct', ''): v for k, v in results.threeway_percentages.items()
-                         if any(getattr(v.threeway_result, attr) < alpha
-                                for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])}
+                         if _threeway_any_effect(v, alpha)}
             if sig_pct_tw:
                 st.dataframe(get_threeway_differences_summary(sig_pct_tw), hide_index=True)
             else:
@@ -2952,8 +3034,7 @@ def render_statistics_tab(processed, settings):
         st.markdown("#### Ratios")
         if results.threeway_ratios:
             sig_rat_tw = {k: v for k, v in results.threeway_ratios.items()
-                         if any(getattr(v.threeway_result, attr) < alpha
-                                for attr in ['factor_a_pvalue', 'factor_b_pvalue', 'factor_c_pvalue'])}
+                         if _threeway_any_effect(v, alpha)}
             if sig_rat_tw:
                 st.dataframe(get_threeway_differences_summary(sig_rat_tw), hide_index=True)
             else:
@@ -2993,9 +3074,7 @@ def render_statistics_tab(processed, settings):
         st.markdown("#### Individual BAs")
         if results.twoway_individual_ba:
             sig_ba_tw = {k: v for k, v in results.twoway_individual_ba.items()
-                        if (v.twoway_result.factor_a_pvalue < alpha
-                            or v.twoway_result.factor_b_pvalue < alpha
-                            or v.twoway_result.interaction_pvalue < alpha)}
+                        if _twoway_any_effect(v, alpha)}
             if sig_ba_tw:
                 st.dataframe(get_twoway_differences_summary(sig_ba_tw), hide_index=True)
             else:
@@ -3004,9 +3083,7 @@ def render_statistics_tab(processed, settings):
         st.markdown("#### Percentages")
         if results.twoway_percentages:
             sig_pct_tw = {k.replace('_pct', ''): v for k, v in results.twoway_percentages.items()
-                         if (v.twoway_result.factor_a_pvalue < alpha
-                             or v.twoway_result.factor_b_pvalue < alpha
-                             or v.twoway_result.interaction_pvalue < alpha)}
+                         if _twoway_any_effect(v, alpha)}
             if sig_pct_tw:
                 st.dataframe(get_twoway_differences_summary(sig_pct_tw), hide_index=True)
             else:
@@ -3015,9 +3092,7 @@ def render_statistics_tab(processed, settings):
         st.markdown("#### Ratios")
         if results.twoway_ratios:
             sig_rat_tw = {k: v for k, v in results.twoway_ratios.items()
-                         if (v.twoway_result.factor_a_pvalue < alpha
-                             or v.twoway_result.factor_b_pvalue < alpha
-                             or v.twoway_result.interaction_pvalue < alpha)}
+                         if _twoway_any_effect(v, alpha)}
             if sig_rat_tw:
                 st.dataframe(get_twoway_differences_summary(sig_rat_tw), hide_index=True)
             else:
