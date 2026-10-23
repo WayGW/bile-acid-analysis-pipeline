@@ -2,7 +2,7 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21513592.svg)](https://doi.org/10.5281/zenodo.21513592)
 
-**Version 4.7.0** · [Web application](https://bile-acid-pipeline.streamlit.app/)
+**Version 4.7.1** · [Web application](https://bile-acid-pipeline.streamlit.app/)
 
 A comprehensive, user-friendly pipeline for analyzing LC-MS bile acid data with automated statistical testing and publication-quality visualizations.
 
@@ -180,6 +180,11 @@ where `O` is the sum of observed (non-below-LOD) contributions and `R` is the su
 - `GCDCA_to_TCDCA`, `TCDCA_to_GCDCA`
 - And more...
 
+## What's New in 4.7.1
+
+- Corrected the Zenodo and citation metadata to include the VA Richmond Office of Research and Development affiliation alongside Virginia Commonwealth University
+- No statistical, analytical, or figure-generation behavior changed in this metadata-only release
+
 ## What's New in 4.7.0
 
 - Cross-analyte Benjamini-Hochberg FDR is on by default; q(BH) values now determine omnibus significance and gate post-hoc testing
@@ -197,7 +202,7 @@ The lazy-section rendering, bounded-memory exports, and figure-recipe improvemen
 
 If you use this software, please cite the archived release:
 
-> Way, G. W. (2026). *Bile Acid Analysis Pipeline* (Version 4.7.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.21513592
+> Way, G. W. (2026). *Bile Acid Analysis Pipeline* (Version 4.7.1) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.21513592
 
 The concept DOI above always resolves to the latest archived version. Version 4.6.1 is archived at https://doi.org/10.5281/zenodo.23483242. Machine-readable citation metadata is available in [`CITATION.cff`](CITATION.cff).
 
