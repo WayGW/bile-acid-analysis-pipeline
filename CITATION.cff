@@ -9,6 +9,7 @@ authors:
     name-particle: W.
     family-names: Way
     email: waygw@vcu.edu
+    affiliation: "Virginia Commonwealth University; U.S. Department of Veterans Affairs, VA Richmond Office of Research and Development"
     orcid: 'https://orcid.org/0000-0002-5765-2064'
 repository-code: 'https://github.com/WayGW/bile-acid-analysis-pipeline'
 url: 'https://bile-acid-pipeline.streamlit.app/'
@@ -32,5 +33,5 @@ keywords:
   - Python
 license: MIT
 doi: 10.5281/zenodo.21513592
-version: 4.7.0
-date-released: '2026-10-22'
+version: 4.7.1
+date-released: '2026-10-23'
